@@ -1,0 +1,19 @@
+name: Source privacy and demo check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check tracked source and fictional fixture
+        run: python3 Scripts/check_publication.py --tracked
+      - name: Check Python syntax
+        run: python3 -m py_compile Scripts/build_app.py Scripts/check_publication.py
