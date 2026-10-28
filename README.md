@@ -1,29 +1,44 @@
 # SlideQA Prototype
 
-発表前に本人が一度「開始」を押し，日本語の質問を継続して受け付け，ローカル資料の参考箇所と応答案を表示するmacOS向けのソース公開用試作版です．質問ごとの入力モード切替はありません．口頭の訂正・取消と，古い生成結果を表示しない処理を備えています．
+[English](README.md) | [日本語](README.ja.md)
 
-AIの文章は草案です．`UNVERIFIED` は未検証を意味し，引用が存在することや同じモデルの照合が通ることは，意味の正しさの証明ではありません．本文の引用と新しい文章を区別して表示し，草案が参照した原文を常時表示します．内容を確認してから使用してください．
+SlideQA is a macOS presentation Q&A prototype that searches a local slide index and attempts to produce answer drafts with Apple's on-device model. It is designed for a presenter to press 開始 (Start) once before a presentation, receive Japanese questions continuously, and press 停止 (Stop) when finished. It does not require input-mode changes for each question.
 
-同梱資料は，架空の装置と点検について新しく作成した6枚の合成デモだけです．実際の発表資料，ノート，録音，モデル，APIキー，ビルド済みアプリは含みません．
+The interface and speech workflow are currently Japanese. This English guide explains the existing prototype; the app has not been localized into English.
 
-## 状態と制約
+Retrieved slide numbers, titles, and source passages are displayed alongside the result. AI text is labeled `UNVERIFIED` and must be reviewed by the presenter. Exact source quotations are identified separately from newly generated prose. A citation or a successful check by the same model does not establish that an answer is factually correct.
 
-- 公開パッケージはMac上でビルドし，57件・7スイートのSwift Testingと架空6枚の索引検査が通過しました．最新UIの実機表示，実モデルによるデモ3問，実音声の通し試験は未実施です．詳細は[検証記録](docs/verification.md)を参照してください．
-- 応答の正確さと保留率は端末内モデルの出力に依存します．3秒以内の応答は達成・保証していません．
-- 実際の日本語音声から応答案表示までの通し試験は未検証です．
-- 話者識別はありません．発表者自身の発言や疑問形の説明を，聴衆の質問と区別できない場合があります．
-- PDF/PPTXの変換，図表理解，元PDFとの照合，印刷ページ番号の検証は行いません．JSONの`page`はローカル索引の連番です．
-- Developer ID署名・公証付きの配布物ではありません．このリポジトリにはアプリやモデルのバイナリを含めません．
+Only a newly written, fictional six-slide demo about devices and inspections is included. Real presentation materials, notes, recordings, models, API keys, and compiled apps are excluded from this repository.
 
-## 要件
+## Status and limitations
 
-macOS 26以降，Swift 6.2以降の開発環境を想定しています．モデル生成には，端末の`SystemLanguageModel`が利用可能で日本語対応であることが必要です．音声入力には，利用可能な端末内日本語認識と本人によるマイク・音声認識の許可が必要です．
+The published source package was built on a Mac, passed 57 Swift Testing tests in 7 suites, and passed a six-page demo index check. State tests use mock generators and speech events. Local app packaging and ad-hoc signature checks also passed. See the [verification record](docs/verification.md) for the scope of each check.
 
-アプリはモデルや音声資産をダウンロードせず，クラウド認識・外部モデルAPIへ切り替えません．APIキーを要求しません．準備が整っていなければ，その状態を表示して停止します．
+The following remain unverified for this published candidate:
 
-## ビルドと起動
+- The latest GUI on the desktop, real model inference on the public demo, and a complete real Japanese speech-to-answer session.
+- Speech-to-display latency. A response within three seconds has not been achieved or guaranteed.
 
-通常のSwiftPMを使います．隔離を無効にするフラグは，スクリプトにも手順にも含めていません．
+Answer quality and the frequency of withheld answers depend on the local model. Source, subject, number, relationship, and qualification checks reduce some errors; they do not prove semantic truth. Raw sources remain available when a draft is withheld.
+
+There is no speaker identification. The app may treat the presenter's own speech or a rhetorical question as an audience question. Verbal correction and cancellation handling, and guards against displaying stale results, are implemented and covered by mock state tests.
+
+The app reads a text index in JSON. It does not convert PDF/PPTX files, interpret figures, compare the index with an original PDF, or verify printed page numbers. A JSON `page` is the sequential index entry number.
+
+This is a source milestone, not a Developer ID-signed or notarized app distribution.
+
+## Requirements
+
+- macOS 26 or later and a Swift 6.2 or later development environment.
+- Python 3 for the packaging and publication-check scripts.
+- An available on-device `SystemLanguageModel` with Japanese support for draft generation.
+- Available on-device Japanese speech recognition and the owner's microphone/speech authorization for voice input.
+
+The app does not download models or speech assets, request API keys, or switch to cloud recognition or an external model API. Unavailable services are reported rather than installed automatically.
+
+## Build and launch
+
+From a local checkout of this repository:
 
 ```sh
 swift test
@@ -32,19 +47,23 @@ python3 Scripts/build_app.py
 open dist/SlideQAPrototype.app
 ```
 
-`build_app.py`は通常の`swift build`の後，実行ファイルと合成デモをローカルの`.app`へまとめ，鍵を使わないアドホック署名を付けます．既存の出力先は上書きしません．別の出力先を使う場合は`--output`を指定します．スクリプトはアプリの起動，Developer ID署名，公証，インストール，OS設定変更を行いません．GUIとモデルの動作は，通常のデスクトップから開いて確認する必要があります．
+These commands use ordinary SwiftPM. They do not disable its sandbox.
 
-通常起動時は収音・生成を開始しません．本人が「開始」を押すと，端末内で日本語の質問を継続して処理します．「停止」で終了します．質問ごとの追加操作は不要です．必要なOSの許可は本人が判断して行ってください．
+`build_app.py` builds the app product with SwiftPM, packages it with the fictional demo, and applies an ad-hoc signature without a certificate or signing key. It refuses to overwrite an existing output; use `--output` to select a different destination. The script does not launch, install, notarize, or change OS settings. GUI and model behavior require checking from a normal desktop session.
 
-## 自分のローカル資料
+An ordinary launch starts neither audio capture nor generation. For normal voice use, the owner presses 開始 (Start) once and decides any required OS permission prompts personally. 停止 (Stop) ends the session. No per-question arming or input-mode switching is required.
 
-資料のJSONをリポジトリの外に置き，明示して起動します．例の`/absolute/path/`は自分のファイルの場所へ置き換えてください．
+The main 質問と応答案 tab shows questions and answer drafts. 資料の参照 provides source lookup without voice input. Diagnostics and manual text entry are in the secondary 動作確認 tab; these controls are not required during normal presentation use.
+
+## Use your own local slide index
+
+Keep your JSON and other materials outside the repository, then select the file explicitly:
 
 ```sh
 open dist/SlideQAPrototype.app --args --deck /absolute/path/deck.json
 ```
 
-最低限の形式は次のとおりです．
+Replace `/absolute/path/deck.json` with your own local file path. A minimal JSON example is:
 
 ```json
 {
@@ -53,36 +72,48 @@ open dist/SlideQAPrototype.app --args --deck /absolute/path/deck.json
   "slides": [
     {
       "page": 1,
-      "title": "架空の装置の確認",
-      "text": "装置の状態を確認します．",
-      "notes": "この文は形式説明用の架空例です．"
+      "title": "Fictional device inspection",
+      "text": "Check the condition of the device.",
+      "notes": "This is fictional text illustrating the file format."
     }
   ]
 }
 ```
 
-`notes`は文字列で指定します．ページは1から始まる重複のない連続した順序にし，`pageCount`と一致させます．表題は空にできません．本文とノートを両方空にはできません．上限はJSON 5 MiB，500ページ，表題300文字，各本文・ノート20,000文字，全文合計2,000,000文字です．
+Each slide needs `page`, `title`, `text`, and a string `notes` field. Entries must be ordered consecutively from 1, without duplicates, and match `pageCount`. Titles cannot be blank; text and notes cannot both be blank.
 
-入力の`printedNumbersVerified`や`sourceSHA256`を，元PDFの検証済みという意味で信用しません．読込み後のダイジェストはJSON自体の識別用です．固定の回答文やカスタム正規表現ルートも，応答案や検索規則へ取り込みません．構造検証と，内容の真偽は別です．
+Input limits are 5 MiB of JSON, 500 pages, 300 characters per title, 20,000 characters per text or notes field, and 2,000,000 characters across titles, text, and notes.
 
-## 録音しない動作確認
+The loader does not treat input values such as `printedNumbersVerified` or `sourceSHA256` as proof that an original PDF was checked. Its computed digest identifies the JSON input only. Prepared answers and custom regular-expression routes from external JSON are discarded. Structural validation does not establish factual truth.
 
-「動作確認」の準備状態ボタンは，利用可能性と既存の認可状態のメタデータを読みます．許可申請・録音・生成・ダウンロードは行いません．
+## Checks without recording
 
-同じ画面のデモ確認ボタンは，同梱の架空資料について3問を端末内モデルで処理します．通常の照合を通った草案と，明示した未検証草案を結果で区別します．成功数だけで正確性を判断しないでください．この操作は音声認識・画面描画・話者識別の試験ではありません．
+The readiness control in 動作確認 reads service availability and existing authorization metadata. It does not request permissions, record, generate text, or download assets.
 
-明示した診断用起動も可能です．通常起動では実行されません．
+A separate demo check processes three questions about the bundled fictional slides with the on-device model. It distinguishes drafts that passed model review from explicitly unverified drafts. Inspect the actual text and evidence, not just the number of displayed answers. This is not a speech, screen-rendering, or speaker-identification test.
+
+The same diagnostic can be selected explicitly at launch:
 
 ```sh
 open dist/SlideQAPrototype.app --args --verify-local-answers-no-audio --disable-microphone
 ```
 
-この起動は最大4分で中止・保存して終了します．`--deck`で別資料を指定した場合は，デモ生成確認を拒否します．診断結果と途中結果は，このMacのApplication Support内の`SlideQA/Diagnostics`にだけ保存します．リポジトリには書きません．
+This mode never starts from an ordinary launch. It stops after at most four minutes, saves its result, and exits. It refuses the demo generation check when an external `--deck` selection is present. Results and progress are saved under `SlideQA/Diagnostics` in the local user's Application Support directory, outside the repository.
 
-## データと安全な使い方
+This diagnostic is implemented but was not run on the public demo for the recorded milestone.
 
-通常の音声はメモリ内で処理し，音声ファイルを保存しません．外部モデルAPIや資料送信の経路はありません．資料中の命令は命令として実行しません．ただし，端末内モデルの誤答や指示への追従を完全に防げる保証はありません．機密資料の利用可否は，所有者が適用される取扱条件に従って判断してください．
+## Privacy and publication boundaries
 
-`.gitignore`は資料，録音，ログ，環境ファイル，鍵，ビルド成果物を除外する補助です．公開前には，追加ファイルと履歴を別途確認してください．利用者のJSONや資料は公開せず，常にリポジトリ外に保存してください．
+Normal audio is processed in memory and is not saved as an audio file. The app has no external model API or material-upload path. Source text is treated as data, but local model errors or unintended instruction following cannot be completely prevented. Owners must decide whether their materials may be used under the applicable handling rules.
 
-ライセンスの付与は所有者が決定する事項です．このステージでは既存の別プロジェクトのライセンスを転用していません．
+Keep real decks, notes, recordings, private prompts and generated answers, runtime logs, keys, and build outputs outside the repository and its history. `.gitignore` helps exclude these files; inspect every proposed file and its history before publication.
+
+To check the publication boundary locally:
+
+```sh
+python3 Scripts/check_publication.py --tracked
+```
+
+GitHub CI checks tracked source, the fictional fixture, and Python syntax. It does not build Apple frameworks or validate model, audio, or GUI behavior.
+
+A license has not been added to this milestone. The owner retains that choice; no license from a different project has been copied.
