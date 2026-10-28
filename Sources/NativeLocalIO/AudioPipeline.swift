@@ -101,7 +101,7 @@ public final class NativeAudioPipeline {
     private var assembler = TranscriptAssembler()
     private var sourceRevisions:[Int:Int]=[:]
     private var legacy:LegacyOfflineMicrophone?
-    public var recognizerName: String { legacy == nil ? "SpeechTranscriber":"SFSpeechRecognizer（端末内のみ）" }
+    public var recognizerName: String { legacy == nil ? "SpeechTranscriber":"SFSpeechRecognizer" }
     var replayStartUptime: Double = 0
     var preparationSeconds: Double = 0
 

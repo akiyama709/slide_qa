@@ -15,7 +15,8 @@ import UniformTypeIdentifiers
     @Published private(set) var index:EvidenceIndex?
     @Published private(set) var liveSession:LiveQASession?
     @Published private(set) var importing=false
-    @Published private(set) var documentLabel="資料を選択してください"
+    @Published private(set) var documentLabel=""
+    @Published private(set) var formatLabel=""
     @Published private(set) var importWarnings:[String]=[]
     @Published private(set) var originalFileSHA256:String?
     private var loadGate=PresentationLoadGate()
@@ -31,10 +32,11 @@ import UniformTypeIdentifiers
             useDemo()
         }
     }
-    func choosePresentation() {
+    func choosePresentation(language:InterfaceLanguageStore) {
         let panel=NSOpenPanel()
-        panel.title="発表資料を開く"
-        panel.message="PDF・PPTX・資料JSONをこのMac内で読み込みます．資料は外部へ送信しません．"
+        panel.title=language.text("発表資料を開く")
+        panel.message=language.text("PDF・PPTX・資料JSONをこのMac内で読み込みます．資料は外部へ送信しません．")
+        panel.prompt=language.text("開く")
         panel.allowsMultipleSelection=false;panel.canChooseDirectories=false
         panel.allowedContentTypes=[.pdf,.json]+(UTType(filenameExtension:"pptx").map{[$0]} ?? [])
         if panel.runModal() == .OK,let url=panel.url {load(url)}
@@ -42,7 +44,7 @@ import UniformTypeIdentifiers
     private func resetForSelection()->UUID {
         loadTask?.cancel();liveSession?.stop()
         index=nil;liveSession=nil;results=[];question="";titleFilter="";selectedPage=nil
-        importWarnings=[];originalFileSHA256=nil;message="";importing=true
+        importWarnings=[];originalFileSHA256=nil;message="";importing=true;documentLabel="";formatLabel=""
         return loadGate.begin()
     }
     func load(_ url:URL) {
@@ -71,13 +73,13 @@ import UniformTypeIdentifiers
     private func install(_ imported:ImportedPresentation,index prepared:EvidenceIndex?=nil) {
         let loaded=prepared ?? EvidenceIndex(deck:imported.deck)
         index=loaded;importWarnings=imported.warnings;originalFileSHA256=imported.originalFileSHA256;importing=false
-        documentLabel="\(imported.deck.sourceFile) · \(imported.deck.pageCount)枚 · \(imported.format.rawValue.uppercased())"
+        formatLabel=imported.format.rawValue.uppercased()
         liveSession=LiveQASession(index:loaded,generator:OnDeviceDraftGenerator(displayPolicy:.unverifiedPrototype),
             reviewPolicy:.allowUnverifiedPrototype,generationAllowed:!CommandLine.arguments.contains("--safe-ui-smoke"))
     }
     func cancelImport() {
         loadGate.invalidate();loadTask?.cancel();loadTask=nil;importing=false
-        if index==nil {documentLabel="資料を選択してください"}
+        if index==nil {documentLabel=""}
     }
     var slides:[Slide] {
         guard let index else {return []}
@@ -100,55 +102,71 @@ import UniformTypeIdentifiers
 }
 
 @main struct RealDeckEvidenceApplication:App {
+    @StateObject private var ui=InterfaceLanguageStore()
     @StateObject private var model=EvidenceViewModel()
     @StateObject private var audio=LiveAudioController()
     @StateObject private var verification=NativeVerificationModel()
     @State private var selectedTab=1
     @State private var checkStarted=false
+    @MainActor private var documentHeading:String {
+        if let index=model.index {
+            return ui.format("{0} · {1}枚 · {2}",arguments:[index.deck.sourceFile,String(index.deck.pageCount),model.formatLabel])
+        }
+        return model.documentLabel.isEmpty ? ui.text("資料を選択してください"):model.documentLabel
+    }
     var body:some Scene {
-        WindowGroup("SlideQA Prototype 0.24.0 · UNVERIFIED") {
+        WindowGroup("SlideQA 0.25.0") {
           VStack(spacing:0) {
             HStack {
-                Button("資料を開く…") {model.choosePresentation()}
+                Button(ui.text("ui.4b56425eecbf2940")) {model.choosePresentation(language:ui)}
                     .keyboardShortcut("o",modifiers:.command)
-                    .accessibilityLabel("発表資料を開く")
-                    .accessibilityHint("PDF・PPTX・JSONを選択します")
+                    .accessibilityLabel(ui.text("ui.e4a5bb47a808ec43"))
+                    .accessibilityHint(ui.text("ui.c7d36a22917d2565"))
                     .accessibilityIdentifier("presentation.open")
                     .disabled(audio.running || audio.starting || audio.stopping || verification.running)
-                Text(model.documentLabel).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                    .accessibilityLabel("選択中の資料").accessibilityValue(Text(model.documentLabel))
+                Text(documentHeading).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    .accessibilityLabel(ui.text("ui.0f547e007f14d84d")).accessibilityValue(Text(documentHeading))
                 Spacer()
+                Menu {
+                    Picker(ui.text("表示言語"),selection:Binding(get:{ui.language},set:{ui.select($0)})) {
+                        Text(ui.text("英語")).tag(InterfaceLanguage.english)
+                        Text(ui.text("日本語")).tag(InterfaceLanguage.japanese)
+                    }.accessibilityIdentifier("interface.language")
+                } label:{Label(ui.text("設定"),systemImage:"gearshape")}
+                    .accessibilityLabel(ui.text("表示言語を選択"))
                 if model.importing {
-                    ProgressView().controlSize(.small).accessibilityLabel("資料を読込み中")
-                    Button("読込みを中止") {model.cancelImport()}.accessibilityIdentifier("presentation.cancelImport")
+                    ProgressView().controlSize(.small).accessibilityLabel(ui.text("ui.42508c0915c419d9"))
+                    Button(ui.text("ui.caef505ae9b26648")) {model.cancelImport()}.accessibilityIdentifier("presentation.cancelImport")
                 }
             }.padding(12)
             if !model.importWarnings.isEmpty {
-                DisclosureGroup("読込みの注意点") {
-                    ForEach(model.importWarnings,id:\.self){Text($0).font(.caption).frame(maxWidth:.infinity,alignment:.leading)}
+                DisclosureGroup(ui.text("ui.aa2942e1de3e0ecd")) {
+                    ForEach(model.importWarnings,id:\.self){Text(ui.text($0)).font(.caption).frame(maxWidth:.infinity,alignment:.leading)}
                 }.padding(.horizontal,12).padding(.bottom,8)
             }
             if let session=model.liveSession {
             TabView(selection:$selectedTab) {
-                EvidenceMainView(model:model).tabItem{Text("資料の参照")}.tag(0)
+                EvidenceMainView(model:model).tabItem{Text(ui.text("ui.9e4a11f727de4c34"))}.tag(0)
                     LiveSessionPanel(session:session,audio:audio,verification:verification,onOpenSource:{page in model.selectedPage=page;selectedTab=0})
-                        .tabItem{Text("質問と応答案")}.tag(1)
+                        .tabItem{Text(ui.text("ui.ace9f8d7189b9284"))}.tag(1)
                     LiveDiagnosticPanel(session:session,audio:audio,verification:verification,originalFileSHA256:model.originalFileSHA256)
-                        .tabItem{Text("動作確認")}.tag(2)
+                        .tabItem{Text(ui.text("ui.5f867e41fe27e63b"))}.tag(2)
             }.frame(minWidth:1040,minHeight:800)
             } else {
                 VStack(spacing:18) {
-                    Text(model.importing ? "資料を端末内で読み込んでいます":"発表前に資料を開いてください").font(.title)
-                    Text("PDF・PPTX・資料JSONに対応します．文字と発表ノートを参照し，応答案は未検証の草案として表示します．")
-                    Text("画像のみのPDFのOCR，図表の意味理解には対応していません．").foregroundStyle(.secondary)
+                    Text(model.importing ? ui.text("ui.3588d9223d82f6f6"):ui.text("ui.1a781986911ce71a")).font(.title)
+                    Text(ui.text("ui.5ac01915738bd9a9"))
+                    Text(ui.text("ui.457d52b1c85f3867")).foregroundStyle(.secondary)
                     if !model.message.isEmpty {
-                        Text(model.message).foregroundStyle(.red).textSelection(.enabled)
-                            .accessibilityLabel("資料の読込みエラー").accessibilityValue(Text(model.message))
+                        Text(ui.text(model.message)).foregroundStyle(.red).textSelection(.enabled)
+                            .accessibilityLabel(ui.text("ui.3f4013e2bb1e3161")).accessibilityValue(Text(ui.text(model.message)))
                     }
-                    Button("架空6枚の合成デモを使う") {model.useDemo()}.disabled(model.importing)
+                    Button(ui.text("ui.c77bd836e79807c7")) {model.useDemo()}.disabled(model.importing)
                 }.padding(30).frame(minWidth:1040,minHeight:800,maxHeight:.infinity)
             }
           }
+                .environmentObject(ui)
+                .environment(\.locale,Locale(identifier:ui.language.rawValue))
                 .disabled(CommandLine.arguments.contains("--safe-ui-smoke"))
                 .task {
                     let launch=LocalLaunchConfiguration(arguments:CommandLine.arguments)
@@ -192,48 +210,49 @@ import UniformTypeIdentifiers
 }
 
 struct EvidenceMainView: View {
+    @EnvironmentObject private var ui:InterfaceLanguageStore
     @ObservedObject var model: EvidenceViewModel
     var body: some View {
         HSplitView {
             VStack(alignment: .leading, spacing: 10) {
-                Text("ローカル資料・\(model.index?.deck.pageCount ?? 0)枚").font(.title3)
-                TextField("番号・表題を絞り込み", text: $model.titleFilter)
+                Text(ui.format("ui.083c97382139ecea",arguments:[String(describing:model.index?.deck.pageCount ?? 0)])).font(.title3)
+                TextField(ui.text("ui.3adf722abdf4f02a"), text: $model.titleFilter)
                     .textFieldStyle(.roundedBorder)
                 List(selection: $model.selectedPage) {
                     ForEach(model.slides) { slide in
-                        Text("\(slide.page)：\(slide.title)")
+                        Text("\(slide.page): \(slide.title)")
                             .font(.system(size: 14)).fixedSize(horizontal: false, vertical: true)
                             .padding(.vertical, 5).tag(slide.page)
                     }
                 }
-                Text("項目を選ぶと，抽出本文と発表ノートの全文を確認できます．")
+                Text(ui.text("ui.ab40f7cc03ade54f"))
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(14).frame(minWidth: 270, idealWidth: 310, maxWidth: 390)
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("SlideQA · 読み込んだ資料の原文を探す").font(.title2)
-                Text("資料の原文を確認する画面です．通常の使用は「質問と応答案」だけで行えます．")
+                Text(ui.text("ui.4ff8cfa371155d5e")).font(.title2)
+                Text(ui.text("ui.df5b0aef3eea6a73"))
                     .foregroundStyle(.secondary)
                 TextEditor(text: $model.question).font(.system(size: 17))
                     .padding(6).frame(height: 90)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-                    .accessibilityLabel("質問入力")
+                    .accessibilityLabel(ui.text("ui.ef50f5116d059c98"))
                     .onChange(of: model.question) { _, _ in model.invalidateResults() }
                 HStack {
-                    Button("資料から探す") { model.search() }
+                    Button(ui.text("ui.03a261beb47f1fb8")) { model.search() }
                         .keyboardShortcut(.return, modifiers: .command)
                         .disabled(model.index == nil || model.question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button("表示を消去") { model.clear() }
-                    Text("⌘ Return で検索").font(.caption).foregroundStyle(.secondary)
+                    Button(ui.text("ui.03846efd296f188e")) { model.clear() }
+                    Text(ui.text("ui.d580c44fd0c01c41")).font(.caption).foregroundStyle(.secondary)
                 }
-                if !model.message.isEmpty { Text(model.message).font(.callout).foregroundStyle(.secondary) }
+                if !model.message.isEmpty { Text(ui.text(model.message)).font(.callout).foregroundStyle(.secondary) }
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         if let page = model.selectedPage, let slide = model.index?.slide(page: page) {
                             SourceSlideView(slide: slide, sourceName: sourceName)
                         } else if model.results.isEmpty {
-                            Text("質問を検索するか，左の資料を選択してください．")
+                            Text(ui.text("ui.98fb4339524299e6"))
                                 .foregroundStyle(.secondary).padding(.top, 20)
                         } else {
                             ForEach(model.results) { result in
@@ -243,45 +262,46 @@ struct EvidenceMainView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.trailing, 10)
                 }
                 Divider()
-                Text("出典：\(sourceName) ／ ファイル内の順序と抽出表題を使用")
+                Text(ui.format("ui.29aa2f0394bf2b6d",arguments:[String(describing:sourceName)]))
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                Text("このタブは原文参照です．語の一致は回答の正しさを保証しません．新しい応答案は「質問と応答案」で生成します．図表の意味理解には対応していません．")
+                Text(ui.text("ui.803a77df6338d88f"))
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(20).frame(minWidth: 650)
         }
     }
     private var sourceName: String {
-        model.index.map { URL(fileURLWithPath: $0.deck.sourceFile).lastPathComponent } ?? "読込エラー"
+        model.index.map { URL(fileURLWithPath: $0.deck.sourceFile).lastPathComponent } ?? ui.text("ui.1e495985d03938b0")
     }
 }
 
 struct SearchResultView: View {
+    @EnvironmentObject private var ui:InterfaceLanguageStore
     let result: EvidenceSearchResult
     let onOpen: (Int) -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(result.question).font(.headline).textSelection(.enabled)
-            Text(result.disposition.label).font(.callout)
+            Text(ui.text(result.disposition.label)).font(.callout)
                 .foregroundStyle(result.candidates.isEmpty ? .secondary : .primary)
             ForEach(result.candidates) { candidate in
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("\(candidate.page)：\(candidate.title)")
+                    Text("\(candidate.page): \(candidate.title)")
                         .font(.system(size: 22)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                    Text(candidate.basis).font(.caption).foregroundStyle(.secondary)
+                    Text(ui.text(candidate.basis)).font(.caption).foregroundStyle(.secondary)
                     if candidate.passages.isEmpty {
-                        Text("質問に対応する原文の箇所を特定できません．資料全体を確認してください．")
+                        Text(ui.text("ui.aaf7969813dff657"))
                             .font(.callout)
                     }
                     ForEach(candidate.passages) { passage in
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("出典：\(passage.citation)").font(.caption).foregroundStyle(.secondary)
+                            Text(ui.format("ui.ce60f9011413c50e",arguments:[String(describing:ui.citation(passage))])).font(.caption).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                             Text(passage.text).font(.system(size: 17)).lineSpacing(5)
                                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
                             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 7))
                     }
-                    Button("このスライドの本文・ノート全文を開く") { onOpen(candidate.page) }
+                    Button(ui.text("ui.9cca36006f6285b9")) { onOpen(candidate.page) }
                 }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
                     .overlay(RoundedRectangle(cornerRadius: 9).stroke(.quaternary))
             }
@@ -290,22 +310,23 @@ struct SearchResultView: View {
 }
 
 struct SourceSlideView: View {
+    @EnvironmentObject private var ui:InterfaceLanguageStore
     let slide: Slide
     let sourceName: String
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("\(slide.page)：\(slide.title)").font(.system(size: 24))
+            Text("\(slide.page): \(slide.title)").font(.system(size: 24))
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-            Text("出典：\(sourceName)・\(slide.page)ページ").font(.caption)
+            Text(ui.format("ui.b135bbb38c72ed34",arguments:[String(describing:sourceName),String(describing:slide.page)])).font(.caption)
                 .foregroundStyle(.secondary).textSelection(.enabled)
-            Text("スライドの抽出本文（全文）").font(.headline)
-            Text(slide.text.isEmpty ? "抽出本文がありません．" : slide.text)
+            Text(ui.text("ui.fdd290d9270a26f1")).font(.headline)
+            Text(slide.text.isEmpty ? ui.text("ui.cac871bc182e8c43") : slide.text)
                 .font(.system(size: 17)).lineSpacing(5).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             Divider()
-            Text("発表ノート（全文）").font(.headline)
-            Text(slide.notes.isEmpty ? "このページの発表ノートはありません．" : slide.notes)
+            Text(ui.text("ui.323174b992c4dc46")).font(.headline)
+            Text(slide.notes.isEmpty ? ui.text("ui.1c6cc7b85b6852ac") : slide.notes)
                 .font(.system(size: 17)).lineSpacing(5).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-            Text("読み込んだファイルから抽出した文字です．配置・図表の意味は再現しません．表題とページ番号は原本と合わせて確認してください．")
+            Text(ui.text("ui.793abc4c8a093006"))
                 .font(.caption).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }

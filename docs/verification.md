@@ -1,5 +1,17 @@
 # Prototype verification
 
+## English/Japanese interface (v0.25.0)
+
+2026-10-28, local Apple silicon Mac. A small Settings menu switches the app interface between English and Japanese. An app-specific preference persists the selection. Unsupported saved values use the first supported preferred language, or English. The same observable session and document objects remain in place when the language changes; no per-question interaction was added.
+
+- The final SwiftPM application build passed. 74 Swift Testing tests in 9 suites passed in 3.399 seconds, excluding compilation. The independent-writer PDF/PPTX integration test was enabled.
+- Seven localization tests read the actual native language resources, verify paired keys and argument positions, test both languages and deterministic fallback, and persist/reopen a selection in an isolated UserDefaults test domain. They also check that technical typography is not misclassified as Japanese, known status/failure messages have English forms, and source arguments containing Japanese text or placeholder-like characters are preserved verbatim.
+- 220 app-owned UI messages have paired English/Japanese entries. Localized microphone/speech purpose strings are included, but no permission request or recording was initiated. English documentation and English language resources are checked for Japanese text. Japanese documentation remains separate.
+- Interface selection does not translate source documents, filenames, questions, quotations, or model prose. Speech recognition and question-boundary detection remain Japanese. System-controlled dialogs and unknown service diagnostics may follow macOS language settings.
+- The original import, cancellation, correction, stale-result and microphone-ownership regression tests passed. Speech events and generators in session tests remain mocks; the import integration test reads actual fictional files through the production loader.
+
+Not performed for this update: an interactive app launch, screen/pixel inspection, keyboard/VoiceOver operation, real microphone input, or a new model inference run. Native catalog/preference tests and source inspection do not establish actual GUI operation or visual fit. Previously reported quality and latency limitations remain.
+
 ## Generic-file import (v0.24.0)
 
 2026-10-28, local Apple silicon Mac. PDF/PPTX/JSON selection, local text/notes extraction, a file-selection welcome screen, cancellation of the old session, and late-import rejection are implemented. Ordinary launch loads no presentation. The bundled six-slide demo is an explicit alternative.
@@ -22,7 +34,7 @@ To reproduce independent-file checks, see the optional fixture commands in the R
 
 ## Historical v0.23.0 source milestone
 
-2026-10-27，Apple silicon Mac．
+2026-10-27, Apple silicon Mac.
 
 - The public package compiled successfully with Swift 6 strict concurrency and Apple frameworks.
 - 57 Swift Testing tests in 7 suites passed. These include synthetic source validation, explicit UNVERIFIED admission versus strict rejection, continuous questions after one start, verbal cancellation, and rejection of delayed results. The generators and speech events in these state tests are mocks.

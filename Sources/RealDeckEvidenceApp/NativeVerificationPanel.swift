@@ -118,20 +118,21 @@ import SwiftUI
 }
 
 struct NativeVerificationPanel:View {
+    @EnvironmentObject private var ui:InterfaceLanguageStore
     @ObservedObject var model:NativeVerificationModel
     var body:some View {
         VStack(alignment:.leading,spacing:8) {
-            Text("ローカルの準備状態と架空デモ").font(.headline)
+            Text(ui.text("ui.96fb12b3d90b7066")).font(.headline)
             HStack {
-                Button("準備状態を確認"){model.inspect()}
-                Button("録音せず架空デモ3問を確認"){model.verifyAnswers()}
+                Button(ui.text("ui.0b8bfa95fb96cec9")){model.inspect()}
+                Button(ui.text("ui.3d866966b8dcca79")){model.verifyAnswers()}
                     .disabled(Deck.hasExternalSelection())
             }.disabled(model.running || model.safeMode)
-            Text(model.status).font(.caption)
+            Text(ui.text(model.status)).font(.caption)
             if !model.readiness.isEmpty {
-                Text("端末内モデル：\(model.readiness["systemLanguageModel"] ?? "不明") ／ 日本語対応：\(model.readiness["japaneseSupported"] ?? "不明")").font(.caption)
+                Text(ui.format("ui.ee2a88d1526f5831",arguments:[String(describing:model.readiness["systemLanguageModel"] ?? ui.text("不明")),String(describing:model.readiness["japaneseSupported"] ?? ui.text("不明"))])).font(.caption)
             }
-            ForEach(model.summaries,id:\.self){Text($0).font(.caption)}
+            ForEach(model.summaries,id:\.self){Text(ui.text($0)).font(.caption)}
             if !model.savedReport.isEmpty {Text(model.savedReport).font(.caption2).textSelection(.enabled)}
         }
     }

@@ -3,6 +3,7 @@ import PackageDescription
 
 let package=Package(
     name:"SlideQAPrototype",
+    defaultLocalization:"en",
     platforms:[.macOS("26.0")],
     products:[
         .executable(name:"SlideQAPrototype",targets:["RealDeckEvidenceApp"]),

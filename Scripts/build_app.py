@@ -34,19 +34,24 @@ def main() -> None:
     resources.mkdir(parents=True)
     shutil.copy2(binary, executable_dir / "SlideQAPrototype")
     shutil.copy2(root / "Sources" / "SlideQACore" / "Resources" / "demo.json", resources / "demo.json")
+    for language in ("en", "ja"):
+        shutil.copytree(root / "Sources" / "SlideQACore" / "Resources" / (language + ".lproj"),
+                        contents / "Resources" / (language + ".lproj"))
     info = {
         "CFBundleExecutable": "SlideQAPrototype",
         "CFBundleIdentifier": "local.slideqa.prototype",
-        "CFBundleName": "SlideQA Prototype",
-        "CFBundleDisplayName": "SlideQA Prototype",
+        "CFBundleName": "SlideQA",
+        "CFBundleDisplayName": "SlideQA",
+        "CFBundleDevelopmentRegion": "en",
+        "CFBundleLocalizations": ["en", "ja"],
         "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": "0.24.0",
-        "CFBundleVersion": "2400",
+        "CFBundleShortVersionString": "0.25.0",
+        "CFBundleVersion": "2500",
         "LSMinimumSystemVersion": "26.0",
         "NSPrincipalClass": "NSApplication",
         "NSHighResolutionCapable": True,
-        "NSMicrophoneUsageDescription": "本人が開始を押した場合だけ，日本語の質問をこのMac内で処理します．",
-        "NSSpeechRecognitionUsageDescription": "本人が開始を押した場合だけ，利用可能な端末内音声認識を使用します．",
+        "NSMicrophoneUsageDescription": "Only your Start action begins on-device recognition of Japanese questions on this Mac.",
+        "NSSpeechRecognitionUsageDescription": "Only your Start action uses available on-device Japanese speech recognition.",
     }
     with (contents / "Info.plist").open("wb") as stream:
         plistlib.dump(info, stream)

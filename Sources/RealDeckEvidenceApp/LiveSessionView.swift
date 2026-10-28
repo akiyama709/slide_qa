@@ -3,6 +3,7 @@ import Combine
 import NativeLocalIO
 import RealDeckEvidenceCore
 import SwiftUI
+import SlideQACore
 
 @MainActor final class LiveAudioController:ObservableObject {
     @Published private(set) var ownerConsent=false
@@ -62,6 +63,7 @@ import SwiftUI
 }
 
 struct LiveSessionPanel:View {
+    @EnvironmentObject private var ui:InterfaceLanguageStore
     @ObservedObject var session:LiveQASession
     @ObservedObject var audio:LiveAudioController
     @ObservedObject var verification:NativeVerificationModel
@@ -71,22 +73,23 @@ struct LiveSessionPanel:View {
         VStack(alignment:.leading,spacing:12) {
             Text("SlideQA").font(.title)
             HStack {
-                Button(audio.starting ? "準備中":"開始") {audio.startByOwner(session:session)}
+                Button(audio.starting ? ui.text("ui.9e305eab23ddf8d3"):ui.text("ui.cc147e162c82bbc7")) {audio.startByOwner(session:session)}
                     .buttonStyle(.borderedProminent)
                     .disabled(!audio.enabledForThisLaunch || audio.running || audio.starting || audio.stopping || verification.running)
-                Button(audio.stopping ? "停止中":"停止") {audio.stop(session:session)}
+                Button(audio.stopping ? ui.text("ui.72eea71385de7be6"):ui.text("ui.ca4d973c0b006b75")) {audio.stop(session:session)}
                     .disabled(audio.stopping || (!audio.running && !audio.starting && !session.acceptingInput))
-                Text(audio.running ? "質問を継続して受け付けています":"発表前に一度開始してください．").foregroundStyle(.secondary)
+                Text(audio.running ? ui.text("ui.3aa713a1fa1a8eb2"):ui.text("ui.51ef5206fba40810")).foregroundStyle(.secondary)
             }
             if !audio.running && !audio.starting {
-                Text("開始すると，このMacのマイクを使って日本語を端末内で認識します．音声・資料は外部へ送信せず，音声ファイルを保存しません．").font(.caption).foregroundStyle(.secondary)
+                Text(ui.text("ui.e7ea99bcc7a3d68f")).font(.caption).foregroundStyle(.secondary)
             }
-            if !audio.enabledForThisLaunch {Text("この起動では音声入力は無効です．有効化と実機試験は確認後に行います．").font(.caption)}
-            Text(audio.message).font(.caption).foregroundStyle(.secondary)
-            if verification.running {Text("動作確認中です．終了後に開始できます．").font(.caption)}
-            Text(session.status).font(.callout)
+            Text(ui.text("ui.5a0885e126c08c6a")).font(.caption).foregroundStyle(.secondary)
+            if !audio.enabledForThisLaunch {Text(ui.text("ui.c73dda359d7aedb2")).font(.caption)}
+            Text(ui.text(audio.message)).font(.caption).foregroundStyle(.secondary)
+            if verification.running {Text(ui.text("ui.8f38cd54631e166c")).font(.caption)}
+            Text(ui.text(session.status)).font(.callout)
             if !session.transcript.isEmpty {
-                Text("認識中："+session.transcript).font(.callout).lineLimit(3).textSelection(.enabled)
+                Text(ui.text("ui.1e8b0bf7b73cd645")+session.transcript).font(.callout).lineLimit(3).textSelection(.enabled)
             }
             Divider()
             ScrollView {
@@ -94,13 +97,14 @@ struct LiveSessionPanel:View {
                     ForEach(Array(session.cards.reversed())) {card in LiveQuestionCardView(card:card,onCancel:{session.cancel(id:card.id)},onOpenSource:onOpenSource)}
                 }.frame(maxWidth:.infinity,alignment:.leading).padding(.trailing,10)
             }
-            Text("「訂正します…」「今の質問を取り消します」も受け付けます．発表者と聴衆の声は識別しないため，講演中の疑問文を拾う場合があります．応答案は出典と合わせてご確認ください．")
+            Text(ui.text("ui.1df12ad4697d34d0"))
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(20)
     }
 }
 
 struct LiveDiagnosticPanel:View {
+    @EnvironmentObject private var ui:InterfaceLanguageStore
     @ObservedObject var session:LiveQASession
     @ObservedObject var audio:LiveAudioController
     @ObservedObject var verification:NativeVerificationModel
@@ -109,25 +113,25 @@ struct LiveDiagnosticPanel:View {
     var body:some View {
         ScrollView {
             VStack(alignment:.leading,spacing:16) {
-                Text("動作確認 · v0.24.0").font(.title2)
-                Text("通常の使用ではこの画面の操作は不要です．音声入力・応答品質・表示速度の確認は未完です．").foregroundStyle(.secondary)
+                Text(ui.text("ui.5f867e41fe27e63b")).font(.title2)
+                Text(ui.text("ui.2b749e3f7c9f5263")).foregroundStyle(.secondary)
                 NativeVerificationPanel(model:verification).disabled(audio.running || audio.starting || audio.stopping)
-                DisclosureGroup("資料の識別情報") {
-                    if let digest=originalFileSHA256 {Text("元ファイル SHA-256："+digest).textSelection(.enabled)}
-                    Text("抽出索引 SHA-256："+session.index.deck.sourceSHA256).textSelection(.enabled)
-                    Text("内容を識別する値です．正確性・印刷番号・視覚的な一致の証明ではありません．").font(.caption)
+                DisclosureGroup(ui.text("ui.de3a9665aa01129c")) {
+                    if let digest=originalFileSHA256 {Text(ui.text("ui.d815335fbc9dafe2")+digest).textSelection(.enabled)}
+                    Text(ui.text("ui.0f338ffa2106f1d0")+session.index.deck.sourceSHA256).textSelection(.enabled)
+                    Text(ui.text("ui.52cfb3205210e7d5")).font(.caption)
                 }
-                DisclosureGroup("手入力で同じ質問処理を確認する") {
+                DisclosureGroup(ui.text("ui.a9a7d51c3f004ed3")) {
                     VStack(alignment:.leading,spacing:8) {
                         TextEditor(text:$typedQuestion).font(.system(size:17)).frame(height:90)
                             .overlay(RoundedRectangle(cornerRadius:5).stroke(.quaternary))
-                            .accessibilityLabel("確認用の質問")
-                        Button("質問として処理する") {
+                            .accessibilityLabel(ui.text("ui.8be9a9f8e739f2f4"))
+                        Button(ui.text("ui.8a3bf2b4784f56e2")) {
                             if !session.acceptingInput {session.beginContinuousQuestions()}
                             session.setGenerationEnabled(true)
                             session.submitTyped(typedQuestion)
                         }.disabled(typedQuestion.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || audio.running || audio.starting || audio.stopping || verification.running)
-                        Text("手入力は音声認識や発話からの速度の試験ではありません．結果は「質問と応答案」に表示します．").font(.caption)
+                        Text(ui.text("ui.9dc25c722013eef9")).font(.caption)
                     }
                 }
             }.padding(20).frame(maxWidth:.infinity,alignment:.leading)
@@ -136,33 +140,34 @@ struct LiveDiagnosticPanel:View {
 }
 
 struct LiveQuestionCardView:View {
+    @EnvironmentObject private var ui:InterfaceLanguageStore
     let card:LiveQACard
     let onCancel:()->Void
     let onOpenSource:(Int)->Void
     var body:some View {
         VStack(alignment:.leading,spacing:12) {
             Text(card.ticket.text).font(.headline).textSelection(.enabled)
-            Text(card.status).font(.caption).foregroundStyle(.secondary)
+            Text(ui.text(card.status)).font(.caption).foregroundStyle(.secondary)
             if card.allowsDisplay {
                 if let reference=card.reference {
                     ForEach(reference.candidates) {candidate in
-                        Text("\(candidate.page)：\(candidate.title)").font(.system(size:17)).textSelection(.enabled)
+                        Text("\(candidate.page): \(candidate.title)").font(.system(size:17)).textSelection(.enabled)
                     }
                 }
                 if let draft=card.draft {
                     VStack(alignment:.leading,spacing:10) {
-                        Text(draft.composition == .quotedSources ? "原文引用（新規生成ではありません）":"AI草案・未検証（UNVERIFIED）").font(.headline)
-                        if !draft.reviewNote.isEmpty {Text(draft.reviewNote).font(.callout).foregroundStyle(.orange)}
+                        Text(draft.composition == .quotedSources ? ui.text("ui.3dee612c9d3b03a1"):ui.text("ui.f3f6fb15b1ead24e")).font(.headline)
+                        if !draft.reviewNote.isEmpty {Text(ui.text(draft.reviewNote)).font(.callout).foregroundStyle(.orange)}
                         if draft.abstained {
-                            Text(draft.text).font(.system(size:19)).lineSpacing(5)
+                            Text(ui.text(draft.text)).font(.system(size:19)).lineSpacing(5)
                         } else {
                             ForEach(draft.segments) {segment in
                                 VStack(alignment:.leading,spacing:5) {
                                     if let quotation=segment.quotation {
-                                        Text("原文の該当箇所（引用）").font(.caption).foregroundStyle(.secondary)
+                                        Text(ui.text("ui.44e67fb8f61baae0")).font(.caption).foregroundStyle(.secondary)
                                         Text(quotation.text).font(.system(size:19)).lineSpacing(5)
                                             .fixedSize(horizontal:false,vertical:true).textSelection(.enabled)
-                                        Text(quotation.citation).font(.caption).textSelection(.enabled)
+                                        Text(ui.citation(quotation)).font(.caption).textSelection(.enabled)
                                     } else {
                                         Text(segment.modelText).font(.system(size:19)).lineSpacing(5)
                                             .fixedSize(horizontal:false,vertical:true).textSelection(.enabled)
@@ -171,19 +176,19 @@ struct LiveQuestionCardView:View {
                             }
                         }
                         if !draft.citations.isEmpty {
-                            Text(draft.citations.map(\.citation).joined(separator:"\n")).font(.caption).textSelection(.enabled)
+                            Text(draft.citations.map({ui.citation($0)}).joined(separator:"\n")).font(.caption).textSelection(.enabled)
                         }
                         if !draft.abstained {
-                            Text("出典ID・数値などの形式検査を通過した案です．意味の正しさを証明した結果ではありません．")
+                            Text(ui.text("ui.952fb2d01a483f3d"))
                                 .font(.caption).foregroundStyle(.secondary)
                             if draft.localModelReviewPassed {
-                                Text("端末内モデルによる各文の照合も通過しています．同じモデルによる判断であり，人の確認が必要です．")
+                                Text(ui.text("ui.fb1bcf38f719c723"))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
-                            DisclosureGroup("応答候補が参照した原文を確認する") {
+                            DisclosureGroup(ui.text("ui.a67eaa3a7b744cf4")) {
                                 ForEach(draft.citations) {quote in
                                     VStack(alignment:.leading,spacing:6) {
-                                        Text("出典：\(quote.citation)").font(.caption)
+                                        Text(ui.format("ui.ce60f9011413c50e",arguments:[String(describing:ui.citation(quote))])).font(.caption)
                                         Text(quote.text).font(.system(size:17)).lineSpacing(4)
                                     }.textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading).padding(.vertical,8)
                                 }
@@ -197,17 +202,17 @@ struct LiveQuestionCardView:View {
                     let originals=draftCitations.isEmpty ? Array(reference.candidates.first?.passages.prefix(1) ?? []):draftCitations
                     ForEach(originals) {original in
                         VStack(alignment:.leading,spacing:6) {
-                            Text(card.draft?.citations.isEmpty == false ? "草案が引用した原文（全文）":"参考原文（引用）").font(.headline)
-                            Text(original.citation).font(.caption)
+                            Text(card.draft?.citations.isEmpty == false ? ui.text("ui.5aea848358c1f383"):ui.text("ui.486c5ef8925b8d9d")).font(.headline)
+                            Text(ui.citation(original)).font(.caption)
                             Text(original.text).font(.system(size:17)).lineSpacing(4).textSelection(.enabled)
                         }.padding(12).frame(maxWidth:.infinity,alignment:.leading)
                             .background(.quaternary.opacity(0.35),in:RoundedRectangle(cornerRadius:8))
                     }
-                    DisclosureGroup("候補スライドと原文・留保の全文を確認する") {
+                    DisclosureGroup(ui.text("ui.444936b275ddb963")) {
                         SearchResultView(result:reference,onOpen:onOpenSource)
                     }
                 }
-                Button("この質問を取り消す",action:onCancel).disabled(card.cancelled)
+                Button(ui.text("ui.78137c28cd53ffd0"),action:onCancel).disabled(card.cancelled)
             }
         }.padding(15).frame(maxWidth:.infinity,alignment:.leading)
             .overlay(RoundedRectangle(cornerRadius:9).stroke(.quaternary))

@@ -1,0 +1,2 @@
+"NSMicrophoneUsageDescription" = "本人が開始を押した場合だけ，日本語の質問をこのMac内で処理します．";
+"NSSpeechRecognitionUsageDescription" = "本人が開始を押した場合だけ，利用可能な端末内日本語音声認識を使用します．";

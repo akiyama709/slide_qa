@@ -1,16 +1,16 @@
-# SlideQA Prototype
+# SlideQA
 
-[English](README.md) | [日本語](README.ja.md)
+[English](README.md) | [Japanese](README.ja.md)
 
-SlideQA is a macOS presentation Q&A prototype. Before presenting, choose your own PDF, PPTX, or slide-index JSON with 資料を開く… (Open presentation). The app builds a local text index and shows the selected filename, format, and number of pages. It is not tied to a particular person's presentation.
+SlideQA is a macOS presentation Q&A prototype. Before presenting, choose your own PDF, PPTX, or slide-index JSON with Open presentation. The app builds a local text index and shows the selected filename, format, and number of pages. It is not tied to a particular person's presentation.
 
-The interface and speech workflow are Japanese. The owner presses 開始 (Start) once to receive questions continuously and 停止 (Stop) to finish. No per-question arming or input-mode switching is required. File selection belongs to preparation before the session; it is disabled while the microphone or diagnostics are active.
+The interface supports English and Japanese. Choose Settings > Interface language before presenting. The owner presses Start once to receive Japanese questions continuously and Stop to finish. No per-question arming or input-mode switching is required. File selection belongs to preparation before the session; it is disabled while the microphone or diagnostics are active.
 
 AI text is an UNVERIFIED draft, shown separately from source quotations. Slide numbers, extracted titles, and original extracted passages remain visible. Citations and model checks do not prove factual correctness; review the text before using it. Verbal correction/cancellation and stale-result guards are retained.
 
 ## Choose a presentation
 
-An ordinary launch starts at a file-selection screen with no presentation loaded. It starts neither audio capture nor generation. Select a file with 資料を開く…. The fictional six-slide demo is an explicitly labeled alternative, not the default.
+An ordinary launch starts at a file-selection screen with no presentation loaded. It starts neither audio capture nor generation. Select a file with Open presentation. The fictional six-slide demo is an explicitly labeled alternative, not the default.
 
 | Format | What is read | Important limits |
 | --- | --- | --- |
@@ -48,9 +48,15 @@ These commands use ordinary SwiftPM without disabling its sandbox. The packaging
 
 ## Use the app
 
-After import, inspect the filename, page count, source text, and import warnings. Then use the 質問と応答案 tab and press 開始 once when you personally want to start voice input. Only that explicit action can request microphone/speech permission and begin capture. 停止 ends the session.
+After import, inspect the filename, page count, source text, and import warnings. Then use the Questions and drafts tab and press Start once when you personally want to start voice input. Only that explicit action can request microphone/speech permission and begin capture. Stop ends the session.
 
-資料の参照 provides source lookup without voice input. Diagnostics and manual text entry remain in the secondary 動作確認 tab. No speaker identification is implemented: the presenter's speech or rhetorical questions may be mistaken for audience questions.
+### Interface language
+
+Use the gear menu, Settings > Interface language, to select English or Japanese. The app remembers the selection between launches. Before a selection has been saved, it uses the first supported macOS preferred language and falls back to English. Changing the interface language keeps the selected presentation and current question session intact.
+
+This changes app labels, source headings, and app-owned status/error messages. It does not translate presentation text, filenames, recognized questions, quotations, or generated drafts. Voice input and question-boundary detection remain Japanese; an English interface does not add English speech recognition. macOS-controlled permission dialogs and unrecognized service diagnostics can follow the system language.
+
+Source lookup provides source access without voice input. Diagnostics and manual text entry remain in the secondary Diagnostics tab. No speaker identification is implemented: the presenter's speech or rhetorical questions may be mistaken for audience questions.
 
 An optional launch argument also selects a file. Fully quit an existing instance before using it:
 
@@ -85,7 +91,7 @@ Input claims such as printedNumbersVerified or sourceSHA256 do not certify an or
 
 ## Checks without recording
 
-The readiness control in 動作確認 reads service availability and existing authorization metadata without permission requests, recording, generation or downloads.
+The readiness control in Diagnostics reads service availability and existing authorization metadata without permission requests, recording, generation or downloads.
 
 A separate, explicitly labeled demo check asks three questions about the fictional bundled demo using the on-device model. This does not validate your selected presentation, speech input, rendering or speaker identification. It is disabled for an external --deck launch.
 
@@ -98,7 +104,7 @@ This explicit diagnostic stops/saves/exits after at most four minutes. Its resul
 A headless import-and-source check can use the same production file loader:
 
 ```sh
-swift run SlideQADemoCheck --deck /absolute/path/presentation.pptx --query "スライド1の内容を教えてください．"
+swift run SlideQADemoCheck --deck /absolute/path/presentation.pptx --query "humidity"
 ```
 
 It does not invoke the model, microphone, or GUI. The JSON output distinguishes a matching page from available evidence: a title-only match can be insufficient and have zero quoted passages.
@@ -115,7 +121,7 @@ The independent-file integration test is enabled only when SLIDEQA_IMPORT_FIXTUR
 
 ## Verification and privacy
 
-See [the verification record](docs/verification.md). The v0.24.0 app compiled locally and 67 tests in 8 suites passed, including production-loader checks on independently written fictional PDF/PPTX files. Compilation, mock session tests, real file import, native inference, real speech, and GUI checks are reported separately. Interactive file selection, new-deck model quality, real speech, and GUI/accessibility operation remain unverified for this version.
+See [the verification record](docs/verification.md). The v0.25.0 app compiled locally and 74 tests in 9 suites passed, including production-loader checks on independently written fictional PDF/PPTX files and native language-resource, preference-persistence, fallback, and formatting checks. Compilation, mock session tests, real file import, native inference, real speech, and GUI checks are reported separately. Interactive language switching/file selection, new-deck model quality, real speech, pixels, and GUI/accessibility operation remain unverified for this version.
 
 A response within three seconds has not been achieved or guaranteed. On-device output quality and the frequency of withheld drafts vary. Source/subject/number/relationship/qualification checks reduce some errors but do not prove semantic truth.
 
@@ -125,6 +131,7 @@ Only source, tests, documentation, and a newly written fictional demo belong her
 
 ```sh
 python3 Scripts/check_publication.py --tracked
+python3 Scripts/check_localization.py
 ```
 
-GitHub CI checks publication boundaries, the fictional fixture, and Python syntax. It does not build Apple frameworks or validate model/audio/GUI behavior. No license has been added; that choice remains with the owner.
+GitHub CI checks publication boundaries, language resources, English-only documentation, the fictional fixture, and Python syntax. It does not build Apple frameworks or validate model/audio/GUI behavior. No license has been added; that choice remains with the owner.

@@ -16,4 +16,6 @@ jobs:
       - name: Check tracked source and fictional fixture
         run: python3 Scripts/check_publication.py --tracked
       - name: Check Python syntax
-        run: python3 -m py_compile Scripts/build_app.py Scripts/check_publication.py Scripts/create_import_fixture.py
+        run: python3 -m py_compile Scripts/build_app.py Scripts/check_publication.py Scripts/create_import_fixture.py Scripts/check_localization.py
+      - name: Check language resources and English documentation
+        run: python3 Scripts/check_localization.py
