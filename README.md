@@ -2,43 +2,40 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-SlideQA is a macOS presentation Q&A prototype that searches a local slide index and attempts to produce answer drafts with Apple's on-device model. It is designed for a presenter to press 開始 (Start) once before a presentation, receive Japanese questions continuously, and press 停止 (Stop) when finished. It does not require input-mode changes for each question.
+SlideQA is a macOS presentation Q&A prototype. Before presenting, choose your own PDF, PPTX, or slide-index JSON with 資料を開く… (Open presentation). The app builds a local text index and shows the selected filename, format, and number of pages. It is not tied to a particular person's presentation.
 
-The interface and speech workflow are currently Japanese. This English guide explains the existing prototype; the app has not been localized into English.
+The interface and speech workflow are Japanese. The owner presses 開始 (Start) once to receive questions continuously and 停止 (Stop) to finish. No per-question arming or input-mode switching is required. File selection belongs to preparation before the session; it is disabled while the microphone or diagnostics are active.
 
-Retrieved slide numbers, titles, and source passages are displayed alongside the result. AI text is labeled `UNVERIFIED` and must be reviewed by the presenter. Exact source quotations are identified separately from newly generated prose. A citation or a successful check by the same model does not establish that an answer is factually correct.
+AI text is an UNVERIFIED draft, shown separately from source quotations. Slide numbers, extracted titles, and original extracted passages remain visible. Citations and model checks do not prove factual correctness; review the text before using it. Verbal correction/cancellation and stale-result guards are retained.
 
-Only a newly written, fictional six-slide demo about devices and inspections is included. Real presentation materials, notes, recordings, models, API keys, and compiled apps are excluded from this repository.
+## Choose a presentation
 
-## Status and limitations
+An ordinary launch starts at a file-selection screen with no presentation loaded. It starts neither audio capture nor generation. Select a file with 資料を開く…. The fictional six-slide demo is an explicitly labeled alternative, not the default.
 
-The published source package was built on a Mac, passed 57 Swift Testing tests in 7 suites, and passed a six-page demo index check. State tests use mock generators and speech events. Local app packaging and ad-hoc signature checks also passed. See the [verification record](docs/verification.md) for the scope of each check.
+| Format | What is read | Important limits |
+| --- | --- | --- |
+| PDF | The existing text layer, in file page order | Titles are inferred from the first nonempty text line. Speaker notes are unavailable. |
+| PPTX | DrawingML text and speaker-note text, in the presentation's relationship order | Title placeholders are preferred. Missing titles are inferred. Hidden slides retain their positions; note footer/page-number placeholders are excluded. |
+| JSON | A validated local slide index | The schema is shown below. Prepared answers and custom regex routes are discarded. |
 
-The following remain unverified for this published candidate:
+The app does not perform OCR, interpret diagrams/images/equations, or recreate visual layout. Scanned/image-only files with no usable text are rejected. Empty pages in a mixed document keep their positions and produce a warning. Extracted titles and sequence numbers need checking against the original; printed page numbers are not certified.
 
-- The latest GUI on the desktop, real model inference on the public demo, and a complete real Japanese speech-to-answer session.
-- Speech-to-display latency. A response within three seconds has not been achieved or guaranteed.
+PDF/PPTX inputs are limited to 100 MiB and 500 pages/slides. Extracted text and notes are limited to 20,000 characters per field per page and 2,000,000 characters in total. PPTX parsing supports UTF-8 XML and is bounded to 4 MiB per XML part and 32 MiB of read XML. Malformed, encrypted, ZIP64, password-protected or copy-restricted files may be rejected. Legacy PPT, PPTM and Keynote files are unsupported.
 
-Answer quality and the frequency of withheld answers depend on the local model. Source, subject, number, relationship, and qualification checks reduce some errors; they do not prove semantic truth. Raw sources remain available when a draft is withheld.
+PPTX parts are read in memory. Archive paths are not extracted to disk, external relationships are not fetched, and XML external entities/DOCTYPE declarations are rejected.
 
-There is no speaker identification. The app may treat the presenter's own speech or a rhetorical question as an audience question. Verbal correction and cancellation handling, and guards against displaying stale results, are implemented and covered by mock state tests.
+Choosing another file cancels the old question session and clears its questions, answers, and index. A late completion from an earlier file selection cannot replace the current selection. A failed import leaves an explicit error rather than continuing with the previous file.
 
-The app reads a text index in JSON. It does not convert PDF/PPTX files, interpret figures, compare the index with an original PDF, or verify printed page numbers. A JSON `page` is the sequential index entry number.
+## Requirements and build
 
-This is a source milestone, not a Developer ID-signed or notarized app distribution.
-
-## Requirements
-
-- macOS 26 or later and a Swift 6.2 or later development environment.
-- Python 3 for the packaging and publication-check scripts.
-- An available on-device `SystemLanguageModel` with Japanese support for draft generation.
+- macOS 26 or later; Swift 6.2 or later.
+- Python 3 for packaging and publication checks.
+- An available on-device SystemLanguageModel with Japanese support for AI drafts.
 - Available on-device Japanese speech recognition and the owner's microphone/speech authorization for voice input.
 
-The app does not download models or speech assets, request API keys, or switch to cloud recognition or an external model API. Unavailable services are reported rather than installed automatically.
+The app does not install/download models or speech assets, request API keys, or switch to cloud recognition or an external model API. Unavailable services are reported.
 
-## Build and launch
-
-From a local checkout of this repository:
+From a local checkout:
 
 ```sh
 swift test
@@ -47,23 +44,25 @@ python3 Scripts/build_app.py
 open dist/SlideQAPrototype.app
 ```
 
-These commands use ordinary SwiftPM. They do not disable its sandbox.
+These commands use ordinary SwiftPM without disabling its sandbox. The packaging script uses an ad-hoc signature without a certificate or signing key. It refuses to overwrite an existing output; choose another path with --output. It does not launch, install, notarize, or change OS settings. No compiled app is published here.
 
-`build_app.py` builds the app product with SwiftPM, packages it with the fictional demo, and applies an ad-hoc signature without a certificate or signing key. It refuses to overwrite an existing output; use `--output` to select a different destination. The script does not launch, install, notarize, or change OS settings. GUI and model behavior require checking from a normal desktop session.
+## Use the app
 
-An ordinary launch starts neither audio capture nor generation. For normal voice use, the owner presses 開始 (Start) once and decides any required OS permission prompts personally. 停止 (Stop) ends the session. No per-question arming or input-mode switching is required.
+After import, inspect the filename, page count, source text, and import warnings. Then use the 質問と応答案 tab and press 開始 once when you personally want to start voice input. Only that explicit action can request microphone/speech permission and begin capture. 停止 ends the session.
 
-The main 質問と応答案 tab shows questions and answer drafts. 資料の参照 provides source lookup without voice input. Diagnostics and manual text entry are in the secondary 動作確認 tab; these controls are not required during normal presentation use.
+資料の参照 provides source lookup without voice input. Diagnostics and manual text entry remain in the secondary 動作確認 tab. No speaker identification is implemented: the presenter's speech or rhetorical questions may be mistaken for audience questions.
 
-## Use your own local slide index
-
-Keep your JSON and other materials outside the repository, then select the file explicitly:
+An optional launch argument also selects a file. Fully quit an existing instance before using it:
 
 ```sh
-open dist/SlideQAPrototype.app --args --deck /absolute/path/deck.json
+open dist/SlideQAPrototype.app --args --deck /absolute/path/presentation.pptx
 ```
 
-Replace `/absolute/path/deck.json` with your own local file path. A minimal JSON example is:
+The same argument accepts .pdf or .json. Keep all owner materials outside this repository.
+
+## JSON index schema
+
+JSON input is limited to 5 MiB. A minimal example:
 
 ```json
 {
@@ -80,40 +79,52 @@ Replace `/absolute/path/deck.json` with your own local file path. A minimal JSON
 }
 ```
 
-Each slide needs `page`, `title`, `text`, and a string `notes` field. Entries must be ordered consecutively from 1, without duplicates, and match `pageCount`. Titles cannot be blank; text and notes cannot both be blank.
+Each slide needs page, title, text and a string notes field. Entries must be ordered consecutively from 1, match pageCount, and have nonblank titles. Text and notes cannot both be blank in supplied JSON. The same character/page limits apply; titles are limited to 300 characters.
 
-Input limits are 5 MiB of JSON, 500 pages, 300 characters per title, 20,000 characters per text or notes field, and 2,000,000 characters across titles, text, and notes.
-
-The loader does not treat input values such as `printedNumbersVerified` or `sourceSHA256` as proof that an original PDF was checked. Its computed digest identifies the JSON input only. Prepared answers and custom regular-expression routes from external JSON are discarded. Structural validation does not establish factual truth.
+Input claims such as printedNumbersVerified or sourceSHA256 do not certify an original document. Diagnostics distinguish the selected file's SHA-256 from the extracted-index digest. These identify the file bytes and text index respectively; neither proves factual truth, printed numbering, or visual fidelity.
 
 ## Checks without recording
 
-The readiness control in 動作確認 reads service availability and existing authorization metadata. It does not request permissions, record, generate text, or download assets.
+The readiness control in 動作確認 reads service availability and existing authorization metadata without permission requests, recording, generation or downloads.
 
-A separate demo check processes three questions about the bundled fictional slides with the on-device model. It distinguishes drafts that passed model review from explicitly unverified drafts. Inspect the actual text and evidence, not just the number of displayed answers. This is not a speech, screen-rendering, or speaker-identification test.
-
-The same diagnostic can be selected explicitly at launch:
+A separate, explicitly labeled demo check asks three questions about the fictional bundled demo using the on-device model. This does not validate your selected presentation, speech input, rendering or speaker identification. It is disabled for an external --deck launch.
 
 ```sh
 open dist/SlideQAPrototype.app --args --verify-local-answers-no-audio --disable-microphone
 ```
 
-This mode never starts from an ordinary launch. It stops after at most four minutes, saves its result, and exits. It refuses the demo generation check when an external `--deck` selection is present. Results and progress are saved under `SlideQA/Diagnostics` in the local user's Application Support directory, outside the repository.
+This explicit diagnostic stops/saves/exits after at most four minutes. Its results go to SlideQA/Diagnostics under the local user's Application Support directory, outside the repository.
 
-This diagnostic is implemented but was not run on the public demo for the recorded milestone.
+A headless import-and-source check can use the same production file loader:
 
-## Privacy and publication boundaries
+```sh
+swift run SlideQADemoCheck --deck /absolute/path/presentation.pptx --query "スライド1の内容を教えてください．"
+```
 
-Normal audio is processed in memory and is not saved as an audio file. The app has no external model API or material-upload path. Source text is treated as data, but local model errors or unintended instruction following cannot be completely prevented. Owners must decide whether their materials may be used under the applicable handling rules.
+It does not invoke the model, microphone, or GUI. The JSON output distinguishes a matching page from available evidence: a title-only match can be insufficient and have zero quoted passages.
 
-Keep real decks, notes, recordings, private prompts and generated answers, runtime logs, keys, and build outputs outside the repository and its history. `.gitignore` helps exclude these files; inspect every proposed file and its history before publication.
+Optional independent-writer fixtures use existing python-pptx (PPTX) or ReportLab (PDF). The helper installs nothing and writes only fictional material outside the repository. With both libraries already available in the chosen Python interpreter:
 
-To check the publication boundary locally:
+```sh
+python3 Scripts/create_import_fixture.py /tmp/slideqa-import-check/fictional.pptx
+python3 Scripts/create_import_fixture.py /tmp/slideqa-import-check/fictional.pdf --format pdf
+SLIDEQA_IMPORT_FIXTURES=/tmp/slideqa-import-check swift test
+```
+
+The independent-file integration test is enabled only when SLIDEQA_IMPORT_FIXTURES is set. The ordinary tests generate their own small parser fixtures without these Python packages.
+
+## Verification and privacy
+
+See [the verification record](docs/verification.md). The v0.24.0 app compiled locally and 67 tests in 8 suites passed, including production-loader checks on independently written fictional PDF/PPTX files. Compilation, mock session tests, real file import, native inference, real speech, and GUI checks are reported separately. Interactive file selection, new-deck model quality, real speech, and GUI/accessibility operation remain unverified for this version.
+
+A response within three seconds has not been achieved or guaranteed. On-device output quality and the frequency of withheld drafts vary. Source/subject/number/relationship/qualification checks reduce some errors but do not prove semantic truth.
+
+Normal audio is processed in memory without audio-file storage. The app has no external model API or material-upload path. Local model errors or unintended instruction following cannot be completely prevented.
+
+Only source, tests, documentation, and a newly written fictional demo belong here. Keep real decks, notes, recordings, private prompts/answers, logs, credentials, models and build outputs outside the repository and its history. Inspect every proposed file; .gitignore is only a helper.
 
 ```sh
 python3 Scripts/check_publication.py --tracked
 ```
 
-GitHub CI checks tracked source, the fictional fixture, and Python syntax. It does not build Apple frameworks or validate model, audio, or GUI behavior.
-
-A license has not been added to this milestone. The owner retains that choice; no license from a different project has been copied.
+GitHub CI checks publication boundaries, the fictional fixture, and Python syntax. It does not build Apple frameworks or validate model/audio/GUI behavior. No license has been added; that choice remains with the owner.

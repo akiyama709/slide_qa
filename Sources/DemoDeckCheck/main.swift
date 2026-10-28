@@ -17,9 +17,17 @@ import SlideQACore
                 guard result.candidates.first?.page == page,index.quotesAreVerbatim(result) else {throw DeckError.invalid}
             }
         }
-        let result:[String:Any]=["kind":"local-json-and-index-check","pages":deck.pageCount,
-            "sourceSelection":external ? "owner-local-json":"fictional-demo",
+        var result:[String:Any]=["kind":"local-file-and-index-check","pages":deck.pageCount,
+            "sourceSelection":external ? "owner-local-presentation":"fictional-demo",
             "PDFVerified":false,"modelInvoked":false,"microphoneStarted":false,"semanticTruthProved":false]
+        if let p=CommandLine.arguments.firstIndex(of:"--query"),p+1<CommandLine.arguments.count {
+            let search=index.search(CommandLine.arguments[p+1])
+            guard index.quotesAreVerbatim(search) else {throw DeckError.invalid}
+            result["disposition"]=search.disposition.rawValue
+            result["candidatePages"]=search.candidates.map(\.page)
+            result["quotedPassages"]=search.candidates.reduce(0){$0+$1.passages.count}
+            result["quotesAreVerbatim"]=true
+        }
         let data=try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys])
         print(String(decoding:data,as:UTF8.self))
     }

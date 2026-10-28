@@ -4,6 +4,7 @@ import Combine
 import RealDeckEvidenceCore
 import SlideQACore
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor final class EvidenceViewModel:ObservableObject {
     @Published var question=""
@@ -11,17 +12,72 @@ import SwiftUI
     @Published var selectedPage:Int?
     @Published var results:[EvidenceSearchResult]=[]
     @Published var message=""
-    let index:EvidenceIndex?
-    let liveSession:LiveQASession?
+    @Published private(set) var index:EvidenceIndex?
+    @Published private(set) var liveSession:LiveQASession?
+    @Published private(set) var importing=false
+    @Published private(set) var documentLabel="資料を選択してください"
+    @Published private(set) var importWarnings:[String]=[]
+    @Published private(set) var originalFileSHA256:String?
+    private var loadGate=PresentationLoadGate()
+    private var loadTask:Task<Void,Never>?
     init() {
-        let loaded=try? EvidenceIndex.configured()
-        index=loaded
-        if let loaded {
-            liveSession=LiveQASession(index:loaded,generator:OnDeviceDraftGenerator(displayPolicy:.unverifiedPrototype),
-                reviewPolicy:.allowUnverifiedPrototype,generationAllowed:!CommandLine.arguments.contains("--safe-ui-smoke"))
-        } else {
-            liveSession=nil;message="ローカルJSONを読み込めません．連番・表題・サイズと --deck の指定を確認してください．"
+        if Deck.hasExternalSelection() {
+            let args=CommandLine.arguments
+            if let position=args.firstIndex(of:"--deck"),position+1<args.count,
+               args.filter({$0=="--deck"}).count==1,!args[position+1].hasPrefix("--"),!args[position+1].contains("://") {
+                load(URL(fileURLWithPath:(args[position+1] as NSString).expandingTildeInPath))
+            } else {message="--deck の後にローカルPDF・PPTX・JSONを一つ指定してください．"}
+        } else if CommandLine.arguments.contains("--safe-ui-smoke") || CommandLine.arguments.contains("--verify-local-answers-no-audio") {
+            useDemo()
         }
+    }
+    func choosePresentation() {
+        let panel=NSOpenPanel()
+        panel.title="発表資料を開く"
+        panel.message="PDF・PPTX・資料JSONをこのMac内で読み込みます．資料は外部へ送信しません．"
+        panel.allowsMultipleSelection=false;panel.canChooseDirectories=false
+        panel.allowedContentTypes=[.pdf,.json]+(UTType(filenameExtension:"pptx").map{[$0]} ?? [])
+        if panel.runModal() == .OK,let url=panel.url {load(url)}
+    }
+    private func resetForSelection()->UUID {
+        loadTask?.cancel();liveSession?.stop()
+        index=nil;liveSession=nil;results=[];question="";titleFilter="";selectedPage=nil
+        importWarnings=[];originalFileSHA256=nil;message="";importing=true
+        return loadGate.begin()
+    }
+    func load(_ url:URL) {
+        let ticket=resetForSelection();documentLabel=url.lastPathComponent
+        loadTask=Task { [weak self] in
+            let worker=Task.detached(priority:.userInitiated) {
+                let imported=try PresentationImporter.load(url)
+                try Task.checkCancellation()
+                return (imported,EvidenceIndex(deck:imported.deck))
+            }
+            do {
+                let (imported,index)=try await withTaskCancellationHandler(operation:{try await worker.value},onCancel:{worker.cancel()})
+                guard let self,self.loadGate.isCurrent(ticket),!Task.isCancelled else {return}
+                self.install(imported,index:index)
+            } catch {
+                guard let self,self.loadGate.isCurrent(ticket),!Task.isCancelled else {return}
+                self.importing=false;self.message=(error as? LocalizedError)?.errorDescription ?? "資料を読み込めませんでした．"
+            }
+        }
+    }
+    func useDemo() {
+        _=resetForSelection()
+        do {install(try PresentationImporter.demo())}
+        catch {importing=false;message="合成デモを読み込めませんでした．"}
+    }
+    private func install(_ imported:ImportedPresentation,index prepared:EvidenceIndex?=nil) {
+        let loaded=prepared ?? EvidenceIndex(deck:imported.deck)
+        index=loaded;importWarnings=imported.warnings;originalFileSHA256=imported.originalFileSHA256;importing=false
+        documentLabel="\(imported.deck.sourceFile) · \(imported.deck.pageCount)枚 · \(imported.format.rawValue.uppercased())"
+        liveSession=LiveQASession(index:loaded,generator:OnDeviceDraftGenerator(displayPolicy:.unverifiedPrototype),
+            reviewPolicy:.allowUnverifiedPrototype,generationAllowed:!CommandLine.arguments.contains("--safe-ui-smoke"))
+    }
+    func cancelImport() {
+        loadGate.invalidate();loadTask?.cancel();loadTask=nil;importing=false
+        if index==nil {documentLabel="資料を選択してください"}
     }
     var slides:[Slide] {
         guard let index else {return []}
@@ -50,21 +106,55 @@ import SwiftUI
     @State private var selectedTab=1
     @State private var checkStarted=false
     var body:some Scene {
-        WindowGroup("SlideQA Prototype 0.23.0 · UNVERIFIED") {
+        WindowGroup("SlideQA Prototype 0.24.0 · UNVERIFIED") {
+          VStack(spacing:0) {
+            HStack {
+                Button("資料を開く…") {model.choosePresentation()}
+                    .keyboardShortcut("o",modifiers:.command)
+                    .accessibilityLabel("発表資料を開く")
+                    .accessibilityHint("PDF・PPTX・JSONを選択します")
+                    .accessibilityIdentifier("presentation.open")
+                    .disabled(audio.running || audio.starting || audio.stopping || verification.running)
+                Text(model.documentLabel).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    .accessibilityLabel("選択中の資料").accessibilityValue(Text(model.documentLabel))
+                Spacer()
+                if model.importing {
+                    ProgressView().controlSize(.small).accessibilityLabel("資料を読込み中")
+                    Button("読込みを中止") {model.cancelImport()}.accessibilityIdentifier("presentation.cancelImport")
+                }
+            }.padding(12)
+            if !model.importWarnings.isEmpty {
+                DisclosureGroup("読込みの注意点") {
+                    ForEach(model.importWarnings,id:\.self){Text($0).font(.caption).frame(maxWidth:.infinity,alignment:.leading)}
+                }.padding(.horizontal,12).padding(.bottom,8)
+            }
+            if let session=model.liveSession {
             TabView(selection:$selectedTab) {
                 EvidenceMainView(model:model).tabItem{Text("資料の参照")}.tag(0)
-                if let session=model.liveSession {
                     LiveSessionPanel(session:session,audio:audio,verification:verification,onOpenSource:{page in model.selectedPage=page;selectedTab=0})
                         .tabItem{Text("質問と応答案")}.tag(1)
-                    LiveDiagnosticPanel(session:session,audio:audio,verification:verification)
+                    LiveDiagnosticPanel(session:session,audio:audio,verification:verification,originalFileSHA256:model.originalFileSHA256)
                         .tabItem{Text("動作確認")}.tag(2)
-                }
             }.frame(minWidth:1040,minHeight:800)
+            } else {
+                VStack(spacing:18) {
+                    Text(model.importing ? "資料を端末内で読み込んでいます":"発表前に資料を開いてください").font(.title)
+                    Text("PDF・PPTX・資料JSONに対応します．文字と発表ノートを参照し，応答案は未検証の草案として表示します．")
+                    Text("画像のみのPDFのOCR，図表の意味理解には対応していません．").foregroundStyle(.secondary)
+                    if !model.message.isEmpty {
+                        Text(model.message).foregroundStyle(.red).textSelection(.enabled)
+                            .accessibilityLabel("資料の読込みエラー").accessibilityValue(Text(model.message))
+                    }
+                    Button("架空6枚の合成デモを使う") {model.useDemo()}.disabled(model.importing)
+                }.padding(30).frame(minWidth:1040,minHeight:800,maxHeight:.infinity)
+            }
+          }
                 .disabled(CommandLine.arguments.contains("--safe-ui-smoke"))
                 .task {
                     let launch=LocalLaunchConfiguration(arguments:CommandLine.arguments)
                     guard !checkStarted,launch.safeSmoke || launch.automaticModelCheck else {return}
                     checkStarted=true
+                    while model.importing {do {try await Task.sleep(for:.milliseconds(100))} catch {return}}
                     if launch.safeSmoke {runSafeUISmoke()} else {await runNoAudioAcceptance()}
                 }
                 .onDisappear{if let session=model.liveSession {audio.stop(session:session)}}
@@ -121,7 +211,7 @@ struct EvidenceMainView: View {
             }.padding(14).frame(minWidth: 270, idealWidth: 310, maxWidth: 390)
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("SlideQA · ローカルJSONの原文を探す").font(.title2)
+                Text("SlideQA · 読み込んだ資料の原文を探す").font(.title2)
                 Text("資料の原文を確認する画面です．通常の使用は「質問と応答案」だけで行えます．")
                     .foregroundStyle(.secondary)
                 TextEditor(text: $model.question).font(.system(size: 17))
@@ -153,7 +243,7 @@ struct EvidenceMainView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.trailing, 10)
                 }
                 Divider()
-                Text("出典：\(sourceName) ／ ローカルJSONの連番と表題を使用")
+                Text("出典：\(sourceName) ／ ファイル内の順序と抽出表題を使用")
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 Text("このタブは原文参照です．語の一致は回答の正しさを保証しません．新しい応答案は「質問と応答案」で生成します．図表の意味理解には対応していません．")
                     .font(.caption).foregroundStyle(.secondary)
@@ -215,7 +305,7 @@ struct SourceSlideView: View {
             Text("発表ノート（全文）").font(.headline)
             Text(slide.notes.isEmpty ? "このページの発表ノートはありません．" : slide.notes)
                 .font(.system(size: 17)).lineSpacing(5).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-            Text("PDFの配置・図表を再現した表示ではありません．読み込んだJSONの本文とノートです．PDFの原本照合はしていません．")
+            Text("読み込んだファイルから抽出した文字です．配置・図表の意味は再現しません．表題とページ番号は原本と合わせて確認してください．")
                 .font(.caption).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }

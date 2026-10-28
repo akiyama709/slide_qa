@@ -104,13 +104,19 @@ struct LiveDiagnosticPanel:View {
     @ObservedObject var session:LiveQASession
     @ObservedObject var audio:LiveAudioController
     @ObservedObject var verification:NativeVerificationModel
+    var originalFileSHA256:String?=nil
     @State private var typedQuestion=""
     var body:some View {
         ScrollView {
             VStack(alignment:.leading,spacing:16) {
-                Text("動作確認 · v0.23.0").font(.title2)
+                Text("動作確認 · v0.24.0").font(.title2)
                 Text("通常の使用ではこの画面の操作は不要です．音声入力・応答品質・表示速度の確認は未完です．").foregroundStyle(.secondary)
                 NativeVerificationPanel(model:verification).disabled(audio.running || audio.starting || audio.stopping)
+                DisclosureGroup("資料の識別情報") {
+                    if let digest=originalFileSHA256 {Text("元ファイル SHA-256："+digest).textSelection(.enabled)}
+                    Text("抽出索引 SHA-256："+session.index.deck.sourceSHA256).textSelection(.enabled)
+                    Text("内容を識別する値です．正確性・印刷番号・視覚的な一致の証明ではありません．").font(.caption)
+                }
                 DisclosureGroup("手入力で同じ質問処理を確認する") {
                     VStack(alignment:.leading,spacing:8) {
                         TextEditor(text:$typedQuestion).font(.system(size:17)).frame(height:90)

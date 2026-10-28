@@ -143,7 +143,7 @@ public final class NativeAudioPipeline {
         let analyzer = SpeechAnalyzer(modules: [module], options: .init(priority: .userInitiated, modelRetention: .processLifetime))
         self.analyzer = analyzer
         let context = AnalysisContext()
-        context.contextualStrings[.general] = ["オリオン装置", "リラ装置", "温度", "振動", "点検", "校正", "警報", "取消", "訂正"]
+        context.contextualStrings[.general] = ["訂正します", "今の質問を取り消します"]
         try await analyzer.setContext(context)
         try checkSession(session)
         guard let output = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module], considering: inputFormat) else { throw AudioFailure.format }

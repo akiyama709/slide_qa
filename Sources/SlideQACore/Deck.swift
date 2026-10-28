@@ -92,7 +92,7 @@ public struct Deck: Codable, Sendable {
               path.utf8.count<=4096,!path.hasPrefix("--"),!path.contains("://"),!path.contains("\0") else {throw DeckError.arguments}
         let expanded=(path as NSString).expandingTildeInPath
         let url=URL(fileURLWithPath:expanded).standardizedFileURL
-        return try loadLocal(url,sourceName:url.lastPathComponent,isDemo:false)
+        return try PresentationImporter.load(url).deck
     }
     public static func bundled() throws -> Deck {
         let packaged=Bundle.main.resourceURL?.appendingPathComponent("Deck/demo.json")
@@ -138,6 +138,18 @@ public struct Deck: Codable, Sendable {
         // Custom JSON routes are never executed as regular expressions.
         return Deck(sourceFile:URL(fileURLWithPath:sourceName).lastPathComponent,sourceSHA256:digest,
             slides:slides,routes:allowDemoRoutes ? decoded.routes:[])
+    }
+
+    /// Internal factory for bounded PDF/PPTX extraction. Empty pages retain
+    /// their sequence numbers; no canned routes, scripts or verified-PDF flag.
+    static func extracted(slides:[Slide],sourceName:String) throws -> Deck {
+        guard (1...maximumPages).contains(slides.count),slides.map(\.page)==Array(1...slides.count),
+              slides.allSatisfy({!$0.title.isEmpty && $0.title.count<=300 && $0.text.count<=20_000 && $0.notes.count<=20_000}),
+              slides.reduce(0,{$0+$1.title.count+$1.text.count+$1.notes.count})<=2_000_000 else {throw PresentationImportError.oversizedText}
+        let object:[String:Any]=["sourceFile":sourceName,"slides":slides.map{["page":$0.page,"title":$0.title,"text":$0.text,"notes":$0.notes] as [String:Any]}]
+        let data=try JSONSerialization.data(withJSONObject:object,options:.sortedKeys)
+        let digest=SHA256.hash(data:data).map{String(format:"%02x",$0)}.joined()
+        return Deck(sourceFile:URL(fileURLWithPath:sourceName).lastPathComponent,sourceSHA256:digest,slides:slides,routes:[])
     }
 
     public func match(_ question: String) -> SlideMatch? {
@@ -188,7 +200,7 @@ public enum DeckError:Error,LocalizedError {
         case .missing:"同梱の架空デモを読み込めません．"
         case .invalid:"資料JSONのページ連番・表題・本文などを確認してください．"
         case .size:"資料JSONのサイズ又はページ数が上限を超えています．"
-        case .arguments:"ローカルJSONを --deck /absolute/path/deck.json の形式で一つ指定してください．"
+        case .arguments:"ローカルPDF・PPTX・JSONを --deck /absolute/path/file の形式で一つ指定してください．"
         }
     }
 }

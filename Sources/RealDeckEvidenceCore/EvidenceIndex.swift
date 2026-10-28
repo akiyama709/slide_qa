@@ -65,6 +65,7 @@ public struct EvidenceIndex: Sendable {
     private let passagesByPage: [Int: [EvidencePassage]]
     private let referenceEligibleIDs: Set<String>
     private let rarity: [String: Double]
+    private let pageFrequency:[String:Int]
     private let navigationLabelsByPage:[Int:String]
     private let normalizedTextByPage:[Int:String]
 
@@ -73,8 +74,10 @@ public struct EvidenceIndex: Sendable {
         normalizedTextByPage=Dictionary(uniqueKeysWithValues:deck.slides.map{($0.page,normalize($0.title+"\n"+$0.text+"\n"+$0.notes))})
         let navigationCandidates=deck.slides.compactMap {slide -> (Int,String)? in
             let first=(slide.text.components(separatedBy:"\n\n").first ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
-            let sections=["背景","目的","研究計画","実施体制","評価"].filter{first.contains($0)}.count
-            guard first.count<=150,sections>=3,!first.contains("。"),!first.contains("．") else {return nil}
+            // Infer repeated short navigation text from this document, without
+            // assuming a particular subject or a fixed list of section names.
+            guard (12...150).contains(first.count),Self.words(first).count>=3,
+                  !["。","．",".","？","?"].contains(where:first.contains) else {return nil}
             return(slide.page,first)
         }
         let navigationFrequency=Dictionary(grouping:navigationCandidates,by:{normalize($0.1)}).mapValues(\.count)
@@ -119,6 +122,7 @@ public struct EvidenceIndex: Sendable {
         wordsByPage = pageWords
         titleWordsByPage = titleWords
         rarity = frequencies.mapValues { log(1 + Double(deck.slides.count) / Double($0)) }
+        pageFrequency=frequencies
     }
 
     public static func bundled() throws -> EvidenceIndex { EvidenceIndex(deck: try Deck.bundled()) }
@@ -156,7 +160,10 @@ public struct EvidenceIndex: Sendable {
             let routed = route?.slide.page == slide.page
             // One rare, specific source term is useful for reference lookup;
             // weak/common single-word overlap must not force a source match.
-            let specific = matches.contains { $0.count >= 3 && (rarity[$0] ?? 0) > 1.5 }
+            let specific = matches.contains {
+                let contentLength=$0.count>=3 || ($0.count>=2 && $0.range(of:#"[\p{Han}\p{Katakana}]"#,options:.regularExpression) != nil)
+                return contentLength && pageFrequency[$0,default:Int.max] <= max(1,deck.pageCount/4)
+            }
             guard numbered || exactTitle || routed || (matches.count >= 2 && lexical >= 4) || specific else { continue }
             // Coherent content phrases distinguish relation questions from
             // pages sharing isolated topic words. Retrieval remains a hint,

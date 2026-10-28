@@ -185,7 +185,7 @@ private final class LegacyAudioIngress:@unchecked Sendable {
         guard request.requiresOnDeviceRecognition else {failure?("端末内認識を強制できないため停止します．");return}
         request.shouldReportPartialResults=true
         request.addsPunctuation=true
-        request.contextualStrings=["オリオン装置", "リラ装置", "温度", "振動", "点検", "校正", "警報", "取消", "訂正"]
+        request.contextualStrings=["訂正します", "今の質問を取り消します"]
         guard let start=ingress.attach(request) else {return}
         self.request=request
         let turn=UUID(),order=logicalOrder;turnOrder+=1;activeTurn=turn
