@@ -70,9 +70,14 @@ public struct EvidenceIndex: Sendable {
     private let normalizedTextByPage:[Int:String]
 
     public init(deck: Deck) {
+        self=try! Self(deck:deck,checkpoint:{})
+    }
+    public init(deck:Deck,checkpoint:() throws ->Void) throws {
+        try checkpoint()
         self.deck = deck
-        normalizedTextByPage=Dictionary(uniqueKeysWithValues:deck.slides.map{($0.page,normalize($0.title+"\n"+$0.text+"\n"+$0.notes))})
-        let navigationCandidates=deck.slides.compactMap {slide -> (Int,String)? in
+        normalizedTextByPage=Dictionary(uniqueKeysWithValues:try deck.slides.map{try checkpoint();return ($0.page,normalize($0.title+"\n"+$0.text+"\n"+$0.notes))})
+        let navigationCandidates=try deck.slides.compactMap {slide -> (Int,String)? in
+            try checkpoint()
             let first=(slide.text.components(separatedBy:"\n\n").first ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
             // Infer repeated short navigation text from this document, without
             // assuming a particular subject or a fixed list of section names.
@@ -84,7 +89,9 @@ public struct EvidenceIndex: Sendable {
         navigationLabelsByPage=Dictionary(uniqueKeysWithValues:navigationCandidates.filter{navigationFrequency[normalize($0.1),default:0]>=2})
         var passages: [EvidencePassage] = []
         for slide in deck.slides {
+            try checkpoint()
             for (offset, paragraph) in slide.text.components(separatedBy: "\n\n").enumerated() {
+                try checkpoint()
                 let original = paragraph.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !original.isEmpty {
                     passages.append(EvidencePassage(page: slide.page, title: slide.title, source: .slideText,
@@ -99,9 +106,10 @@ public struct EvidenceIndex: Sendable {
             }
         }
         self.passages = passages
-        wordsByPassage = Dictionary(uniqueKeysWithValues: passages.map { ($0.id, Self.words($0.text)) })
+        wordsByPassage = Dictionary(uniqueKeysWithValues: try passages.map {try checkpoint();return ($0.id, Self.words($0.text)) })
         passagesByPage = Dictionary(grouping: passages, by: \.page)
-        referenceEligibleIDs = Set(passages.filter { passage in
+        referenceEligibleIDs = Set(try passages.filter { passage in
+            try checkpoint()
             if passage.source == .speakerNotes { return true }
             let withoutLeadingPage = passage.text.replacingOccurrences(
                 of: #"^\s*[0-9]+\s*[:：]?\s*"#, with: "", options: .regularExpression)
@@ -114,6 +122,7 @@ public struct EvidenceIndex: Sendable {
         var titleWords: [Int: Set<String>] = [:]
         var frequencies: [String: Int] = [:]
         for slide in deck.slides {
+            try checkpoint()
             let terms = Self.words(slide.title + "\n" + slide.text + "\n" + slide.notes)
             pageWords[slide.page] = terms
             titleWords[slide.page] = Self.words(slide.title)
@@ -123,10 +132,13 @@ public struct EvidenceIndex: Sendable {
         titleWordsByPage = titleWords
         rarity = frequencies.mapValues { log(1 + Double(deck.slides.count) / Double($0)) }
         pageFrequency=frequencies
+        try checkpoint()
     }
 
     public static func bundled() throws -> EvidenceIndex { EvidenceIndex(deck: try Deck.bundled()) }
-    public static func configured(arguments:[String]=CommandLine.arguments) throws -> EvidenceIndex { EvidenceIndex(deck:try Deck.configured(arguments:arguments)) }
+    public static func configured(arguments:[String]=CommandLine.arguments) throws -> EvidenceIndex {
+        try ImportResources.withMonitoring {try EvidenceIndex(deck:Deck.configured(arguments:arguments),checkpoint:ImportResources.check)}
+    }
 
     public func slide(page: Int) -> Slide? { deck.slides.first { $0.page == page } }
 

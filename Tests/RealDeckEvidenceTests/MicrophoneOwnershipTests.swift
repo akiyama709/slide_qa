@@ -6,11 +6,14 @@ import RealDeckEvidenceCore
     @Test func verificationLaunchesCannotOpenMicrophoneEvenWithoutTheRedundantDisableFlag() {
         let native=LocalLaunchConfiguration(arguments:["SlideQA","--verify-local-answers-no-audio"])
         #expect(native.automaticModelCheck && !native.microphoneStartAllowed)
+        #expect(!native.writesOwnerDiagnostics)
         let both=LocalLaunchConfiguration(arguments:["SlideQA","--verify-local-answers-no-audio","--safe-ui-smoke"])
         #expect(both.safeSmoke && !both.automaticModelCheck && !both.microphoneStartAllowed)
+        #expect(!both.writesOwnerDiagnostics)
         #expect(!LocalLaunchConfiguration(arguments:["SlideQA","--disable-microphone"]).microphoneStartAllowed)
         let normal=LocalLaunchConfiguration(arguments:["SlideQA"])
         #expect(!normal.safeSmoke && !normal.automaticModelCheck)
+        #expect(normal.writesOwnerDiagnostics)
     }
     @Test func nativePipelineCannotReachPermissionsWithoutOwnerConsent() async {
         let pipeline=NativeAudioPipeline()

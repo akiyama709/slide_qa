@@ -5,68 +5,10 @@ import RealDeckEvidenceCore
 import SwiftUI
 import SlideQACore
 
-@MainActor final class LiveAudioController:ObservableObject {
-    @Published private(set) var ownerConsent=false
-    @Published private(set) var running=false
-    @Published private(set) var starting=false
-    @Published private(set) var stopping=false
-    @Published private(set) var message="音声入力は開始していません．"
-    let enabledForThisLaunch = LocalLaunchConfiguration(arguments:CommandLine.arguments).microphoneStartAllowed
-    private let audio=NativeAudioPipeline()
-    private var startTask:Task<Void,Never>?
-    private var operation=UUID()
-
-    // The only call site is the owner's visible Start button. No automatic
-    // task, launch hook or diagnostic calls this method.
-    func startByOwner(session:LiveQASession) {
-        guard enabledForThisLaunch,!running,!starting,!stopping else {return}
-        ownerConsent=true
-        operation=UUID();let epoch=operation
-        starting=true;message="端末内の音声認識を準備しています．"
-        session.beginContinuousQuestions()
-        startTask=Task { [weak self,session] in
-            guard let self else {return}
-            do {
-                try await self.audio.startMicrophone(authorizedLaunch:self.enabledForThisLaunch,
-                    ownerConsent:self.ownerConsent,allowPermissionPrompt:self.ownerConsent,
-                    onUpdate:{[weak self,weak session] update in
-                        guard let self,let session,self.operation == epoch else {return}
-                        session.receive(update)
-                        if !session.acceptingInput {self.stop(session:session,reason:"質問入力の順序または上限を確認できないため，収音も停止しました．")}
-                    },onEndpoint:{_ in /* acoustic endpoint is not semantic question completion */},
-                    onFailure:{[weak self,weak session] reason in
-                        guard let self,let session,self.operation == epoch else {return}
-                        self.stop(session:session,reason:reason)
-                    })
-                guard !Task.isCancelled,self.operation == epoch else {return}
-                self.starting=false;self.running=true
-                self.message="質問を待っています．\(self.audio.recognizerName)で端末内認識中です．"
-            } catch {
-                guard self.operation == epoch else {return}
-                let reason=(error as? AudioFailure)?.errorDescription ?? "音声認識を開始できませんでした．新規取得や外部認識には切り替えません．"
-                self.stop(session:session,reason:reason)
-            }
-        }
-    }
-    func stop(session:LiveQASession,reason:String?=nil) {
-        operation=UUID();let epoch=operation
-        startTask?.cancel();startTask=nil
-        starting=false;running=false;stopping=true
-        message=reason ?? "収音の停止を確認しています．"
-        session.stop()
-        Task { [weak self] in
-            guard let self else {return}
-            await self.audio.stop()
-            if self.operation == epoch {self.stopping=false;self.message=reason ?? "収音は停止しています．"}
-        }
-    }
-}
-
 struct LiveSessionPanel:View {
     @EnvironmentObject private var ui:InterfaceLanguageStore
     @ObservedObject var session:LiveQASession
     @ObservedObject var audio:LiveAudioController
-    @ObservedObject var verification:NativeVerificationModel
     let onOpenSource:(Int)->Void
 
     var body:some View {
@@ -75,7 +17,7 @@ struct LiveSessionPanel:View {
             HStack {
                 Button(audio.starting ? ui.text("ui.9e305eab23ddf8d3"):ui.text("ui.cc147e162c82bbc7")) {audio.startByOwner(session:session)}
                     .buttonStyle(.borderedProminent)
-                    .disabled(!audio.enabledForThisLaunch || audio.running || audio.starting || audio.stopping || verification.running)
+                    .disabled(!audio.enabledForThisLaunch || audio.running || audio.starting || audio.stopping)
                 Button(audio.stopping ? ui.text("ui.72eea71385de7be6"):ui.text("ui.ca4d973c0b006b75")) {audio.stop(session:session)}
                     .disabled(audio.stopping || (!audio.running && !audio.starting && !session.acceptingInput))
                 Text(audio.running ? ui.text("ui.3aa713a1fa1a8eb2"):ui.text("ui.51ef5206fba40810")).foregroundStyle(.secondary)
@@ -86,7 +28,10 @@ struct LiveSessionPanel:View {
             Text(ui.text("ui.5a0885e126c08c6a")).font(.caption).foregroundStyle(.secondary)
             if !audio.enabledForThisLaunch {Text(ui.text("ui.c73dda359d7aedb2")).font(.caption)}
             Text(ui.text(audio.message)).font(.caption).foregroundStyle(.secondary)
-            if verification.running {Text(ui.text("ui.8f38cd54631e166c")).font(.caption)}
+            if !audio.lastFailure.isEmpty {
+                Text(ui.format("直近の認識中断：{0}",arguments:[ui.text(audio.lastFailure)]))
+                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
             Text(ui.text(session.status)).font(.callout)
             if !session.transcript.isEmpty {
                 Text(ui.text("ui.1e8b0bf7b73cd645")+session.transcript).font(.callout).lineLimit(3).textSelection(.enabled)
@@ -103,39 +48,27 @@ struct LiveSessionPanel:View {
     }
 }
 
-struct LiveDiagnosticPanel:View {
+struct ManualQuestionPanel:View {
     @EnvironmentObject private var ui:InterfaceLanguageStore
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject var session:LiveQASession
-    @ObservedObject var audio:LiveAudioController
-    @ObservedObject var verification:NativeVerificationModel
-    var originalFileSHA256:String?=nil
-    @State private var typedQuestion=""
+    @State private var question=""
     var body:some View {
-        ScrollView {
-            VStack(alignment:.leading,spacing:16) {
-                Text(ui.text("ui.5f867e41fe27e63b")).font(.title2)
-                Text(ui.text("ui.2b749e3f7c9f5263")).foregroundStyle(.secondary)
-                NativeVerificationPanel(model:verification).disabled(audio.running || audio.starting || audio.stopping)
-                DisclosureGroup(ui.text("ui.de3a9665aa01129c")) {
-                    if let digest=originalFileSHA256 {Text(ui.text("ui.d815335fbc9dafe2")+digest).textSelection(.enabled)}
-                    Text(ui.text("ui.0f338ffa2106f1d0")+session.index.deck.sourceSHA256).textSelection(.enabled)
-                    Text(ui.text("ui.52cfb3205210e7d5")).font(.caption)
-                }
-                DisclosureGroup(ui.text("ui.a9a7d51c3f004ed3")) {
-                    VStack(alignment:.leading,spacing:8) {
-                        TextEditor(text:$typedQuestion).font(.system(size:17)).frame(height:90)
-                            .overlay(RoundedRectangle(cornerRadius:5).stroke(.quaternary))
-                            .accessibilityLabel(ui.text("ui.8be9a9f8e739f2f4"))
-                        Button(ui.text("ui.8a3bf2b4784f56e2")) {
-                            if !session.acceptingInput {session.beginContinuousQuestions()}
-                            session.setGenerationEnabled(true)
-                            session.submitTyped(typedQuestion)
-                        }.disabled(typedQuestion.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || audio.running || audio.starting || audio.stopping || verification.running)
-                        Text(ui.text("ui.9dc25c722013eef9")).font(.caption)
-                    }
-                }
-            }.padding(20).frame(maxWidth:.infinity,alignment:.leading)
-        }
+        VStack(alignment:.leading,spacing:14) {
+            Text(ui.text("手入力")).font(.title2)
+            Text(ui.text("マイクを使わず質問を送ります．")).font(.caption)
+            TextEditor(text:$question).font(.system(size:17)).frame(minHeight:100)
+                .accessibilityLabel(ui.text("手入力"))
+            HStack {
+                Button(ui.text("閉じる")) {dismiss()}.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(ui.text("送信")) {
+                    if !session.acceptingInput {session.beginContinuousQuestions()}
+                    session.setGenerationEnabled(true);session.submitTyped(question);dismiss()
+                }.disabled(question.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                    .keyboardShortcut(.return,modifiers:.command)
+            }
+        }.padding(20).frame(width:560,height:240)
     }
 }
 
@@ -147,6 +80,17 @@ struct LiveQuestionCardView:View {
     var body:some View {
         VStack(alignment:.leading,spacing:12) {
             Text(card.ticket.text).font(.headline).textSelection(.enabled)
+            if card.stableCompletion {
+                Text(ui.text("認識文から仮確定した質問です．続く発話や訂正で更新します．"))
+                    .font(.caption).foregroundStyle(.orange)
+            } else if card.provisionalSpeech {
+                Text(ui.text("認識が中断したため仮確定した質問です．認識文を確認してください．"))
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            if card.sourceSelectionAmbiguous {
+                Text(ui.text("複数の資料候補があります．質問との対応は未確定なので，引用元を確認してください．"))
+                    .font(.caption).foregroundStyle(.orange)
+            }
             Text(ui.text(card.status)).font(.caption).foregroundStyle(.secondary)
             if card.allowsDisplay {
                 if let reference=card.reference {
@@ -216,5 +160,10 @@ struct LiveQuestionCardView:View {
             }
         }.padding(15).frame(maxWidth:.infinity,alignment:.leading)
             .overlay(RoundedRectangle(cornerRadius:9).stroke(.quaternary))
+#if SLIDEQA_DESKTOP_VALIDATION
+            .onAppear {DesktopVerification.cardViewUpdated(card)}
+            .onChange(of:card.draft?.text) {_,_ in DesktopVerification.cardViewUpdated(card)}
+            .onChange(of:card.allowsDisplay) {_,_ in DesktopVerification.cardViewUpdated(card)}
+#endif
     }
 }

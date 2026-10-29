@@ -3,6 +3,14 @@ import Foundation
 
 public enum InterfaceLanguage:String,CaseIterable,Hashable,Sendable {
     case english="en",japanese="ja"
+    /// Keep both language names recognizable even before the reader switches.
+    /// These intentional bilingual endonyms are not translated UI messages.
+    public var selectionLabel:String {
+        switch self {
+        case .english:"English（英語）"
+        case .japanese:"日本語（Japanese）"
+        }
+    }
     public static func resolve(stored:String?,preferredLanguages:[String])->InterfaceLanguage {
         if let stored,let value=Self(rawValue:stored) {return value}
         for preferred in preferredLanguages {

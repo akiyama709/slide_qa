@@ -1,47 +1,56 @@
-# Prototype verification
+# Verification of v0.32.0
 
-## English/Japanese interface (v0.25.0)
+Version v0.32.0 is the current checkpoint accepted after the owner's live microphone check on 2026-10-29. Publication retains that version and its runtime source. Acceptance does not establish that generated drafts are certified, every question succeeds, or all environments have been tested.
 
-2026-10-28, local Apple silicon Mac. A small Settings menu switches the app interface between English and Japanese. An app-specific preference persists the selection. Unsupported saved values use the first supported preferred language, or English. The same observable session and document objects remain in place when the language changes; no per-question interaction was added.
+## Observed checks
 
-- The final SwiftPM application build passed. 74 Swift Testing tests in 9 suites passed in 3.399 seconds, excluding compilation. The independent-writer PDF/PPTX integration test was enabled.
-- Seven localization tests read the actual native language resources, verify paired keys and argument positions, test both languages and deterministic fallback, and persist/reopen a selection in an isolated UserDefaults test domain. They also check that technical typography is not misclassified as Japanese, known status/failure messages have English forms, and source arguments containing Japanese text or placeholder-like characters are preserved verbatim.
-- 220 app-owned UI messages have paired English/Japanese entries. Localized microphone/speech purpose strings are included, but no permission request or recording was initiated. English documentation and English language resources are checked for Japanese text. Japanese documentation remains separate.
-- Interface selection does not translate source documents, filenames, questions, quotations, or model prose. Speech recognition and question-boundary detection remain Japanese. System-controlled dialogs and unknown service diagnostics may follow macOS language settings.
-- The original import, cancellation, correction, stale-result and microphone-ownership regression tests passed. Speech events and generators in session tests remain mocks; the import integration test reads actual fictional files through the production loader.
+| Check | Observed result | Scope |
+| --- | --- | --- |
+| Regression suite | 128 tests in 15 suites: 125 passed, three opt-in tests skipped; 8.473 seconds excluding compilation | Independent fictional PDF/PPTX fixtures enabled; default generation and speech events are mocks |
+| Continuous session | Eighty mock answers crossed the 64-card display-retention boundary, with cancellation, reconnection and rejection of retired-stream callbacks | One Start; no microphone or real inference |
+| Desktop model and card updates | Five installed-model replies matched fictional sources and citations; cancelled cards became hidden and Stop rejected subsequent input | Actual model; app-owned SwiftUI view lifecycle in a visible window; no screen pixels or accessibility tree read |
+| Further model continuity | Twenty completed replies from five synthetic question types repeated four times; two in-flight cancellations, two discarded late replies, following-question recovery and a stable definition request without an SDK final event | Actual installed model and production question/session/generator source; no GUI or speech engine in this probe |
+| Audio-buffer processing | Actual AVAudioConverter converted an in-memory synthetic 48 kHz stereo signal to 16 kHz mono; production endpoint and buffering paths were exercised | No microphone, speech recognition or real voice; not a speech-to-answer test |
+| Normal live app | Recognition updates, final speech events, questions and model requests were observed; a completed answer and withheld/error outcomes were recorded | Owner initiated microphone use and accepted this version; agent did not start capture or operate permission controls |
+| Publication and localization | Only approved text sources and a fictional six-slide fixture; 240 matching English/Japanese catalog entries and English-only English documentation | Source checks; no model, microphone or GUI invoked |
 
-Not performed for this update: an interactive app launch, screen/pixel inspection, keyboard/VoiceOver operation, real microphone input, or a new model inference run. Native catalog/preference tests and source inspection do not establish actual GUI operation or visual fit. Previously reported quality and latency limitations remain.
+The twenty-reply model sequence completed in 55.35 seconds overall. Completed-reply latency ranged from 2.40 to 3.83 seconds, with a median of 2.56 seconds, including the stable-completion delay. All twenty replies passed model review and matched the expected fictional facts and citation-page sets. This was five question types repeated four times, not twenty independently varied examples. The additional driver was outside the published product and used byte-identical production generation, session and incremental-question source. Cancellation and Stop guards passed, but these checks cannot establish the factual quality of arbitrary future drafts.
 
-## Generic-file import (v0.24.0)
+The live check establishes that the normal microphone-to-question-to-generation path ran. It also contained withheld drafts and a model decoding failure. Its final Stop/window-close snapshot is not a count of all answers previously shown: Stop clears current draft state. No raw questions, source passages, prompts, generated answers, recordings or owner diagnostic journals are published. The accepted normal app has no synthetic presentation or validation resources packaged inside it.
 
-2026-10-28, local Apple silicon Mac. PDF/PPTX/JSON selection, local text/notes extraction, a file-selection welcome screen, cancellation of the old session, and late-import rejection are implemented. Ordinary launch loads no presentation. The bundled six-slide demo is an explicit alternative.
+## Continuous operation and recovery
 
-- The current app compiled successfully with SwiftPM and the local Apple SDK.
-- 67 Swift Testing tests in 8 suites passed in the final run (10.036 seconds, excluding compilation). The independent-writer integration test was enabled and passed.
-- Actual files made by existing python-pptx 1.0.2 and ReportLab were read by the production PresentationImporter and EvidenceIndex. The PPTX has reordered slide relationships and speaker-note qualifications. The PDF contains English/Japanese text and a blank page. Tests checked titles, order, exact source passages, retained qualifications, and the absence of a previous file's unrelated topic after switching.
-- Parser tests also exercised stored/deflated OOXML, package-root relationships, CDATA, note-footer exclusion, external-reference/DOCTYPE rejection, malformed archives, unsupported inputs, mixed empty pages and late-file-selection rejection.
-- A small-deck retrieval defect was found and corrected: a fixed inverse-document-frequency threshold could prevent a specific single term from matching a one-to-three-page deck. The replacement uses frequency relative to the loaded deck, including meaningful two-character Japanese terms. Answer truth/citation guards were not relaxed.
-- A title-only match remains insufficient when no body/note passage matches. The headless check reports disposition and quotation count; an empty quotation set is not proof of support.
-- Standalone headless checks used the same file loader and source index. They invoke neither the model nor the microphone. Source agreement establishes extraction consistency, not semantic truth.
+The owner starts capture once. There is no per-question arming step, three-question cutoff or retry-count cutoff. Transient recognition failures reconnect until the owner stops; permission denial and unavailable hardware are reported. The compatibility recognizer seals cancellation as a control turn, so it does not become part of the next question. Stable complete requests can be provisionally admitted without waiting indefinitely for an SDK final notification. Later changed wording retracts the earlier draft and invalidates its generation lease.
 
-The first ordinary build was blocked by the local environment's nested sandbox (`sandbox-exec: sandbox_apply: Operation not permitted`). The owner then approved disabling only SwiftPM's internal sandbox for this specific generic build/test/correction cycle. Outer execution restrictions stayed active; no OS/security setting was changed. No exception flag is saved in the project or in normal build instructions.
+Each generation receives its own deadline and invocation lease. The watchdog can retire a stalled call and advance the queue without awaiting a non-cooperative SDK result. Late replies must still match the operation, question, source and revision. At most two SDK invocations can remain alive simultaneously; if both are stuck, new generation is explicitly withheld while question/source handling continues. This bounds outstanding SDK work, not session length, and does not guarantee that the SDK has stopped cancelled work.
 
-The continuous-session, verbal-cancellation, correction, stale-result and microphone-ownership tests use synthetic events and mock generation. They do not test real speech or real model output. No recording or new permission request was initiated by these tests.
+Source quotations stay distinct from generated prose. Citations, deterministic source checks and model review reduce some errors but do not prove semantic truth. A model response can be withheld when support checks fail. Service and decoding failures remain visible. The app does not identify speakers, so the presenter's speech or rhetorical questions can be admitted as questions.
 
-Not verified for v0.24.0: interactive file-picker operation, pixels, keyboard/VoiceOver use, real inference quality on imported presentations, and actual microphone input. Accessibility labels and shortcuts were reviewed in source only. No OCR or diagram interpretation is implemented. Complex layout reading order, inferred titles and printed page numbering require owner review; the independent files are fictional, not the owner's original presentation.
+## Execution context
 
-To reproduce independent-file checks, see the optional fixture commands in the README. Without SLIDEQA_IMPORT_FIXTURES, that one integration test is disabled. Python fixture-writing libraries are optional and are not application runtime dependencies.
+The same signed plain-model probe failed with nested ModelManagerServices.ModelManagerError / 1008 inside the coding-agent execution sandbox and answered in an individually approved execution outside it. Launch Services lookup likewise failed inside that execution sandbox and succeeded outside it. The comparison establishes an execution-context difference without assigning an undocumented meaning to internal error 1008. No execution exception, security-setting change or sandbox bypass was saved in the source or normal app.
 
-## Historical v0.23.0 source milestone
+Synthetic desktop verification is gated by the SLIDEQA_DESKTOP_VALIDATION build flag plus an explicit no-audio verification argument and a matching synthetic manifest/deck. Its hooks are absent from ordinary builds. Safe UI smoke launches and synthetic verification cannot select normal capture diagnostic journals. Before/after journal hashes remained unchanged in the desktop check; launch-configuration regressions cover that boundary.
 
-2026-10-27, Apple silicon Mac.
+The model journal records bounded SDK stage/error-domain/code metadata, not raw error descriptions, private userInfo, question text, passages, prompts or answers. Normal capture processes audio in memory and does not store audio files. Only the owner's explicit Start action may request microphone/speech authorization or begin capture. There is no cloud fallback, external model API, material-upload path or automatic asset installation.
 
-- The public package compiled successfully with Swift 6 strict concurrency and Apple frameworks.
-- 57 Swift Testing tests in 7 suites passed. These include synthetic source validation, explicit UNVERIFIED admission versus strict rejection, continuous questions after one start, verbal cancellation, and rejection of delayed results. The generators and speech events in these state tests are mocks.
-- The headless demo check loaded exactly six fictional pages and verified source/index consistency. It invoked neither the model nor the microphone.
-- Local bundle packaging and strict ad-hoc signature verification passed. The bundle contains only the fictional demo. No compiled app is published in this repository.
-- No real microphone test, new GUI/pixel test, or real inference on this public demo was performed for this milestone. On-device output quality varies; no 3-second speech-to-display guarantee is made.
+## Remaining limits
 
-The local restricted development environment required an owner-approved SwiftPM internal sandbox exception for this specific build/test cycle. Outer execution restrictions remained active; no OS setting was changed. This exception is not saved in the project or required by the documented normal build commands.
+Pixel appearance, keyboard and VoiceOver operation, long live sessions, robustness across microphones/OS installations and model quality across new presentations have not been established by these checks. A three-second response deadline and a successful answer for every question are not guaranteed. Recognition can fail or revise wording, and the model can generate incorrect text, withhold drafts or return service/decoding errors. Review drafts against the original sources.
 
-GitHub CI checks tracked source, credential/path/data boundaries, and the fictional fixture. It does not compile Apple frameworks or verify speech/model/GUI behavior. Native compilation and tests above were performed locally.
+PDF/PPTX/JSON import checks cover generated malformed inputs, cancellation/resource-pressure boundaries and independent fictional files. They do not establish OCR, visual or equation understanding, printed-page-number verification or fidelity for all third-party documents. There are no fixed app quotas on bytes/pages/text length; available resources and supported formats still bound import.
+
+## Publication boundary
+
+The public repository contains source, tests, documentation and the fictional six-slide fixture. Real presentations/notes, recordings, private prompts/answers, diagnostic logs, credentials, models, compiled binaries and local execution helpers remain outside it and its Git history.
+
+Before publication, current tracked files and all locally reachable Git blobs were checked for private-source overlap, personal absolute paths, credential/contact patterns and material/build artifacts. Existing remote branches, tags and reachable commit trees were checked separately. These are scoped checks against the known private source and tested patterns, not proof that every possible secret can be detected. Raw private material and diagnostic journals are excluded from the audit deliverables sent to GitHub.
+
+Run the source checks with:
+
+```sh
+python3 Scripts/check_publication.py --tracked
+python3 Scripts/check_localization.py
+```
+
+GitHub CI checks publication boundaries, the fictional fixture, Python syntax, matching language resources and English-only English documentation. It does not build Apple frameworks or test the model, microphone or GUI. Package.swift has no external package dependencies; optional fixture generation uses existing python-pptx and ReportLab installations without bundling them. The repository has no selected license; publication does not add a new reuse license. The local app is ad-hoc signed, and no compiled app or notarized release is published here.

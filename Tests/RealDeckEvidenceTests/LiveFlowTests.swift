@@ -292,12 +292,15 @@ private func update(_ id:String,_ order:Int,_ text:String,final:Bool=true,revisi
         #expect(fake.requests.count == 1)
         session.stop()
     }
-    @Test func sourceOrderConflictStopsInputRatherThanInventingAnArrivalOrder() throws {
+    @Test func sourceOrderConflictRejectsOnlyThatUpdateWithoutInventingOrder() throws {
         let fake=HeldLocalGenerator();let session=LiveQASession(index:try liveFixture(),generator:fake,reviewPolicy:.mockOnly)
         session.beginInput(phase:.qna)
         session.receive(update("one",0,"温度はどう測定しますか"))
         session.receive(update("different-source",0,"振動はどう測定しますか"))
-        #expect(!session.acceptingInput)
+        #expect(session.acceptingInput)
+        #expect(!session.cards.contains{$0.ticket.text.contains("振動")})
+        session.receive(update("following",1,"振動はどう測定しますか"))
+        #expect(session.cards.contains{$0.ticket.text.contains("振動")})
         #expect(fake.requests.isEmpty)
     }
     @Test func unrelatedAndCredentialQuestionsNeverReachGenerator() throws {
@@ -314,7 +317,7 @@ private func update(_ id:String,_ order:Int,_ text:String,final:Bool=true,revisi
         let fake=HeldLocalGenerator();let session=LiveQASession(index:try liveFixture(),generator:fake,reviewPolicy:.mockOnly)
         session.beginInput(phase:.qna);session.setGenerationEnabled(true)
         session.receive(update("unfinished",0,"温度の測定はどう",final:true))
-        session.receive(update("unfinished-two",1,"温度を教えて",final:true))
+        session.receive(update("unfinished-two",1,"温度を教えても",final:true))
         #expect(session.cards.isEmpty)
         #expect(fake.requests.isEmpty)
         #expect(!LiveQuestionSyntax.isCompleteRequest("温度の測定はどう"))

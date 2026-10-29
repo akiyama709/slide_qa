@@ -60,8 +60,6 @@ public struct Deck: Codable, Sendable {
     public let slides: [Slide]
     public let routes: [Route]
 
-    private static let maximumBytes=5 * 1024 * 1024
-    private static let maximumPages=500
     private static let demoDigest="ae8dcf942d4acfaeece45ce0b4e914279e4c748da4dfdac177a8eec8cc71722f"
     private enum CodingKeys:String,CodingKey {case sourceFile,sourceSHA256,pageCount,printedNumbersVerified,slides,routes}
     public init(from decoder:Decoder) throws {
@@ -106,8 +104,8 @@ public struct Deck: Codable, Sendable {
     private static func loadLocal(_ url:URL,sourceName:String,isDemo:Bool) throws -> Deck {
         guard url.isFileURL else {throw DeckError.arguments}
         let values=try url.resourceValues(forKeys:[.isRegularFileKey,.fileSizeKey])
-        guard values.isRegularFile == true,let size=values.fileSize,size>0,size<=maximumBytes else {throw DeckError.size}
-        let data=try Data(contentsOf:url)
+        guard values.isRegularFile == true,let size=values.fileSize,size>0 else {throw DeckError.size}
+        let data=try Data(contentsOf:url,options:.mappedIfSafe)
         if isDemo {
             let digest=SHA256.hash(data:data).map{String(format:"%02x",$0)}.joined()
             guard digest == demoDigest else {throw DeckError.invalid}
@@ -117,38 +115,36 @@ public struct Deck: Codable, Sendable {
     /// Validates JSON structure only. The digest identifies this JSON input,
     /// not an original PDF, printed numbering, factual truth or visual layout.
     public static func validated(data:Data,sourceName:String="local-deck.json",allowDemoRoutes:Bool=false) throws -> Deck {
-        guard !data.isEmpty,data.count<=maximumBytes else {throw DeckError.size}
+        try ImportResources.check()
+        guard !data.isEmpty else {throw DeckError.size}
         let decoded=try JSONDecoder().decode(Deck.self,from:data)
-        guard (1...maximumPages).contains(decoded.slides.count),decoded.pageCount == decoded.slides.count,
+        guard !decoded.slides.isEmpty,decoded.pageCount == decoded.slides.count,
               decoded.slides.map(\.page) == Array(1...decoded.slides.count) else {throw DeckError.invalid}
-        var total=0
         for slide in decoded.slides {
+            try ImportResources.check()
             guard !slide.title.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
-                  slide.title.count<=300,slide.text.count<=20_000,slide.notes.count<=20_000,
                   !(slide.text+slide.notes).trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {throw DeckError.invalid}
-            total+=slide.title.count+slide.text.count+slide.notes.count
         }
-        guard total<=2_000_000,decoded.routes.count<=maximumPages else {throw DeckError.size}
         for route in decoded.routes {
             guard (1...decoded.slides.count).contains(route.page),route.cues.count<=20,
                   route.cues.allSatisfy({!$0.pattern.isEmpty && $0.pattern.count<=256 && $0.weight.isFinite && $0.weight>0 && $0.weight<=100}) else {throw DeckError.invalid}
         }
-        let digest=SHA256.hash(data:data).map{String(format:"%02x",$0)}.joined()
+        let digest=try ImportResources.digest(data)
         let slides=decoded.slides.map{Slide(page:$0.page,title:$0.title,text:$0.text,notes:$0.notes,preparedScript:nil,scriptSourcePages:nil)}
         // Custom JSON routes are never executed as regular expressions.
         return Deck(sourceFile:URL(fileURLWithPath:sourceName).lastPathComponent,sourceSHA256:digest,
             slides:slides,routes:allowDemoRoutes ? decoded.routes:[])
     }
 
-    /// Internal factory for bounded PDF/PPTX extraction. Empty pages retain
+    /// Internal factory for PDF/PPTX extraction. Empty pages retain
     /// their sequence numbers; no canned routes, scripts or verified-PDF flag.
     static func extracted(slides:[Slide],sourceName:String) throws -> Deck {
-        guard (1...maximumPages).contains(slides.count),slides.map(\.page)==Array(1...slides.count),
-              slides.allSatisfy({!$0.title.isEmpty && $0.title.count<=300 && $0.text.count<=20_000 && $0.notes.count<=20_000}),
-              slides.reduce(0,{$0+$1.title.count+$1.text.count+$1.notes.count})<=2_000_000 else {throw PresentationImportError.oversizedText}
+        try ImportResources.check()
+        guard !slides.isEmpty,slides.map(\.page)==Array(1...slides.count),
+              slides.allSatisfy({!$0.title.isEmpty}) else {throw DeckError.invalid}
         let object:[String:Any]=["sourceFile":sourceName,"slides":slides.map{["page":$0.page,"title":$0.title,"text":$0.text,"notes":$0.notes] as [String:Any]}]
         let data=try JSONSerialization.data(withJSONObject:object,options:.sortedKeys)
-        let digest=SHA256.hash(data:data).map{String(format:"%02x",$0)}.joined()
+        let digest=try ImportResources.digest(data)
         return Deck(sourceFile:URL(fileURLWithPath:sourceName).lastPathComponent,sourceSHA256:digest,slides:slides,routes:[])
     }
 
@@ -199,7 +195,7 @@ public enum DeckError:Error,LocalizedError {
         switch self {
         case .missing:"同梱の架空デモを読み込めません．"
         case .invalid:"資料JSONのページ連番・表題・本文などを確認してください．"
-        case .size:"資料JSONのサイズ又はページ数が上限を超えています．"
+        case .size:"資料JSONを読み込めません．空のファイルではないことを確認してください．"
         case .arguments:"ローカルPDF・PPTX・JSONを --deck /absolute/path/file の形式で一つ指定してください．"
         }
     }

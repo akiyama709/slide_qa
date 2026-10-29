@@ -4,6 +4,57 @@ import Darwin
 @preconcurrency import Speech
 import RealDeckEvidenceCore
 
+public enum InterruptedQuestionCompletion {
+    public static func provisional(_ update:LiveRecognitionUpdate)->LiveRecognitionUpdate? {
+        guard !update.final,LiveQuestionSyntax.isCompleteRequest(update.text),
+              update.sourceRevision != Int.max else {return nil}
+        return .init(id:update.id,order:update.order,text:update.text,final:true,
+            audioStart:update.audioStart,audioEnd:update.audioEnd,alternatives:update.alternatives,
+            sourceRevision:update.sourceRevision.map{$0+1},provisionalCompletion:true)
+    }
+}
+
+/// A complete request can be provisionally released after an acoustic endpoint
+/// or stable recognized wording. The latter is not represented as measured silence.
+@MainActor public final class SpeechQuestionCompletion {
+    private let grace:Duration
+    private let textGrace:Duration
+    private let onStable:@MainActor @Sendable (LiveRecognitionUpdate)->Void
+    private var latest:LiveRecognitionUpdate?
+    private var boundary:Double?
+    private var releasedText:String?
+    private var task:Task<Void,Never>?
+    private var operation=UUID()
+    public init(grace:Duration = .milliseconds(750),textGrace:Duration = .milliseconds(1200),
+                onStable:@escaping @MainActor @Sendable (LiveRecognitionUpdate)->Void) {
+        self.grace=grace;self.textGrace=textGrace;self.onStable=onStable
+    }
+    public func receive(_ update:LiveRecognitionUpdate) {
+        if let latest,update.order<latest.order {return}
+        let same=latest.map{$0.id==update.id && $0.text==update.text && abs($0.audioEnd-update.audioEnd)<0.05} ?? false
+        latest=update
+        if update.final {boundary=nil;releasedText=nil;task?.cancel();task=nil;operation=UUID();return}
+        if let boundary,update.audioEnd>boundary+0.35 {self.boundary=nil}
+        if same,(task != nil || releasedText==update.text) {return}
+        releasedText=nil;schedule()
+    }
+    public func endpoint(_ audioEnd:Double) {boundary=audioEnd;schedule()}
+    public func stop() {task?.cancel();task=nil;latest=nil;boundary=nil;releasedText=nil;operation=UUID()}
+    private func schedule() {
+        task?.cancel();task=nil;operation=UUID()
+        guard let latest,!latest.final,releasedText != latest.text,
+              LiveQuestionSyntax.isCompleteRequest(latest.text) || LiveQuestionSyntax.endsWithCancellation(latest.text) else {return}
+        let token=operation,wait=boundary == nil ? textGrace:grace
+        task=Task {[weak self] in
+            guard let self else {return}
+            do {try await Task.sleep(for:wait)} catch {return}
+            guard self.operation==token,let current=self.latest,!current.final,
+                  current.id==latest.id,current.text==latest.text else {return}
+            self.task=nil;self.releasedText=current.text
+            self.onStable(current)
+        }
+    }
+}
 private struct LegacyTextPacket:Sendable {
     let text:String
     let final:Bool
@@ -11,6 +62,45 @@ private struct LegacyTextPacket:Sendable {
     let alternatives:[String]
     let errorDomain:String?
     let errorCode:Int?
+}
+
+/// The same reducer is used by native callbacks and audio-free regression tests.
+/// A cancellation is a completed control turn, never a prefix of the next question.
+public struct LegacyRecognitionTurns:Sendable {
+    private var order=0
+    private var start:Double?
+    private var completed=""
+    private var revision=0
+    public init() {}
+    public mutating func confirmStableQuestion(_ update:LiveRecognitionUpdate)->LiveRecognitionUpdate? {
+        guard !update.final,update.order==order,update.sourceRevision==revision,revision<Int.max,
+              LiveQuestionSyntax.isCompleteRequest(update.text) || LiveQuestionSyntax.endsWithCancellation(update.text) else {return nil}
+        revision+=1
+        return .init(id:update.id,order:update.order,text:update.text,final:true,audioStart:update.audioStart,
+            audioEnd:update.audioEnd,alternatives:update.alternatives,sourceRevision:revision,
+            provisionalCompletion:true,stableCompletion:true)
+    }
+    public mutating func accept(id:String,text:String,final:Bool,start audioStart:Double,end:Double,
+                                alternatives:[String]=[])->LiveRecognitionUpdate? {
+        guard !text.isEmpty else {return nil}
+        if start == nil {start=audioStart;revision=0}
+        revision+=1
+        // A standalone control utterance supersedes an unfinished speech
+        // fragment; it must still reach the cancellation parser at the start.
+        let prefix=final && LiveQuestionSyntax.isCancellation(text) ? "":completed
+        let accumulated=prefix.isEmpty ? text:prefix+" "+text
+        let value=LiveRecognitionUpdate(id:id+":legacy\(order)",order:order,text:accumulated,final:final,
+            audioStart:start ?? audioStart,audioEnd:end,
+            alternatives:alternatives.map{prefix.isEmpty ? $0:prefix+" "+$0},sourceRevision:revision)
+        if final {
+            if LiveQuestionSyntax.isCompleteRequest(accumulated,finalUtterance:true)
+                || LiveQuestionSyntax.isCancellation(accumulated) || LiveQuestionSyntax.isFinishedStatement(accumulated)
+                || accumulated.utf8.count>=8_000 {
+                order+=1;start=nil;completed="";revision=0
+            } else {completed=accumulated}
+        }
+        return value
+    }
 }
 
 /// Owns only the current request and a bounded RAM pre-roll/rotation buffer.
@@ -80,7 +170,7 @@ private final class LegacyAudioIngress:@unchecked Sendable {
                         pendingDuration-=Double(first.buffer.frameLength)/first.buffer.format.sampleRate
                     }
                 }
-                if pendingDuration>3 {active=false;overflow=true}
+                if pendingDuration>12 {active=false;overflow=true}
             } else {active=false;overflow=true}
         }
         lock.unlock()
@@ -124,11 +214,11 @@ private final class LegacyAudioIngress:@unchecked Sendable {
     private var request:SFSpeechAudioBufferRecognitionRequest?
     private var activeTurn:UUID?
     private var turnOrder=0
-    private var logicalOrder=0
-    private var logicalStart:Double?
-    private var completedText=""
-    private var revision=0
+    private var turns=LegacyRecognitionTurns()
     private var tapInstalled=false
+    private var completionWatchdog:Task<Void,Never>?
+    private var lastTurnUpdate:LiveRecognitionUpdate?
+    private var endpointCompletion:SpeechQuestionCompletion?
     private var callback:(@MainActor @Sendable (LiveRecognitionUpdate)->Void)?
     private var failure:(@MainActor @Sendable (String)->Void)?
 
@@ -142,13 +232,14 @@ private final class LegacyAudioIngress:@unchecked Sendable {
         guard authorizedLaunch,ownerConsent else {throw AudioFailure.microphoneLocked}
         stop();let session=UUID();generation=session
         guard let recognizer=SFSpeechRecognizer(locale:Locale(identifier:"ja-JP")),
-              recognizer.supportsOnDeviceRecognition,recognizer.isAvailable else {throw AudioFailure.japaneseNotInstalled}
+              recognizer.supportsOnDeviceRecognition else {throw AudioFailure.japaneseNotInstalled}
+        guard recognizer.isAvailable else {throw AudioFailure.recognitionInterrupted}
         self.recognizer=recognizer
         var speechStatus=SFSpeechRecognizer.authorizationStatus()
         if speechStatus == .notDetermined {
             guard allowPermissionPrompt else {throw AudioFailure.speechDenied}
-            speechStatus=await withCheckedContinuation {continuation in
-                SFSpeechRecognizer.requestAuthorization {continuation.resume(returning:$0)}
+            speechStatus=await CallbackBridge.value { @Sendable completion in
+                SFSpeechRecognizer.requestAuthorization { @Sendable status in completion(status) }
             }
         }
         try check(session)
@@ -160,26 +251,38 @@ private final class LegacyAudioIngress:@unchecked Sendable {
         } else if microphone != .authorized {throw AudioFailure.microphoneDenied}
         try check(session)
         callback=onUpdate;failure=onFailure
+        endpointCompletion=SpeechQuestionCompletion {[weak self] update in
+            guard let self,self.generation==session,
+                  let value=self.turns.confirmStableQuestion(update) else {return}
+            self.lastTurnUpdate=value;self.callback?(value)
+        }
         let engine=AVAudioEngine();let node=engine.inputNode;let format=node.outputFormat(forBus:0)
         guard format.sampleRate>0,format.channelCount>0,format.commonFormat == .pcmFormatFloat32 else {throw AudioFailure.format}
         let ingress=LegacyAudioIngress(needRequest:{[weak self] in
             Task {@MainActor in guard let self,self.generation == session else {return};self.beginTurn(session)}
         },endpoint:{[weak self] end in Task {@MainActor in
-            guard let self,self.generation == session else {return};onEndpoint(end)
+            guard let self,self.generation == session else {return}
+            onEndpoint(end);self.endpointCompletion?.endpoint(end);self.watchCompletion(session)
         }},failure:{[weak self] in
             Task {@MainActor in
                 guard let self,self.generation == session else {return}
+                self.completeInterruptedQuestion()
                 onFailure("音声認識の待機バッファ上限を超えたため停止します．")
             }
         })
         self.ingress=ingress;self.engine=engine
-        node.installTap(onBus:0,bufferSize:2048,format:format) {buffer,_ in ingress.push(buffer)}
+        node.installTap(onBus:0,bufferSize:2048,format:format) { @Sendable buffer,_ in ingress.push(buffer)}
         tapInstalled=true;engine.prepare()
         do {try engine.start();try check(session)} catch {stop();throw error}
     }
     private func beginTurn(_ session:UUID) {
         guard generation == session,task == nil,let recognizer,recognizer.supportsOnDeviceRecognition,
-              recognizer.isAvailable,let ingress else {return}
+              let ingress else {return}
+        guard recognizer.isAvailable else {
+            // Ingress has already requested a task and will not request again.
+            // A silent return here wedges capture until another owner Start.
+            failure?(AudioFailure.recognitionInterrupted.errorDescription ?? "");return
+        }
         let request=SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition=true
         guard request.requiresOnDeviceRecognition else {failure?("端末内認識を強制できないため停止します．");return}
@@ -187,12 +290,9 @@ private final class LegacyAudioIngress:@unchecked Sendable {
         request.addsPunctuation=true
         request.contextualStrings=["訂正します", "今の質問を取り消します"]
         guard let start=ingress.attach(request) else {return}
-        self.request=request
-        let turn=UUID(),order=logicalOrder;turnOrder+=1;activeTurn=turn
-        if logicalStart == nil {logicalStart=start;revision=0}
-        let groupStart=logicalStart ?? start
-        let prefix=completedText
-        task=recognizer.recognitionTask(with:request) {[weak self] result,error in
+        self.request=request;lastTurnUpdate=nil;endpointCompletion?.stop()
+        let turn=UUID();turnOrder+=1;activeTurn=turn
+        task=recognizer.recognitionTask(with:request) { @Sendable [weak self] result,error in
             let best=result?.bestTranscription
             let packet=LegacyTextPacket(text:best?.formattedString ?? "",final:result?.isFinal ?? false,
                 relativeEnd:best?.segments.last.map{$0.timestamp+$0.duration} ?? 0,
@@ -200,23 +300,18 @@ private final class LegacyAudioIngress:@unchecked Sendable {
                 errorDomain:(error as NSError?)?.domain,errorCode:(error as NSError?)?.code)
             Task {@MainActor in
                 guard let self,self.generation == session,self.activeTurn == turn else {return}
-                if !packet.text.isEmpty {
-                    self.revision+=1
-                    let accumulated=prefix.isEmpty ? packet.text:prefix+" "+packet.text
-                    self.callback?(.init(id:"\(session.uuidString):legacy\(order)",order:order,text:accumulated,final:packet.final,
-                        audioStart:groupStart,audioEnd:start+packet.relativeEnd,
-                        alternatives:packet.alternatives.map{prefix.isEmpty ? $0:prefix+" "+$0},sourceRevision:self.revision))
-                    if packet.final {
-                        if LiveQuestionSyntax.isCompleteRequest(accumulated) || accumulated.utf8.count>=8_000 {
-                            self.logicalOrder+=1;self.logicalStart=nil;self.completedText="";self.revision=0
-                        } else {self.completedText=accumulated}
-                    }
+                if let update=self.turns.accept(id:session.uuidString,text:packet.text,final:packet.final,
+                    start:start,end:start+packet.relativeEnd,alternatives:packet.alternatives) {
+                    self.lastTurnUpdate=update;self.endpointCompletion?.receive(update);self.callback?(update)
                 }
                 if packet.final {
+                    self.completionWatchdog?.cancel();self.completionWatchdog=nil
                     self.activeTurn=nil;self.task?.cancel();self.task=nil;self.request=nil
                     self.ingress?.completeTurn()
                 } else if packet.errorDomain != nil {
-                    self.failure?("端末内の日本語認識を継続できませんでした．外部認識や資産取得には切り替えません．")
+                    self.completeInterruptedQuestion()
+                    let domain=String((packet.errorDomain ?? "Speech").prefix(120))
+                    self.failure?("音声認識サービスが中断しました． "+domain+" / "+String(packet.errorCode ?? 0))
                 }
             }
         }
@@ -225,12 +320,27 @@ private final class LegacyAudioIngress:@unchecked Sendable {
         try Task.checkCancellation()
         guard generation == session else {throw CancellationError()}
     }
+    private func watchCompletion(_ session:UUID) {
+        completionWatchdog?.cancel()
+        let turn=activeTurn
+        completionWatchdog=Task {[weak self] in
+            do {try await Task.sleep(for:.seconds(8))} catch {return}
+            guard let self,self.generation==session,self.activeTurn==turn,turn != nil else {return}
+            self.completeInterruptedQuestion()
+            self.failure?("音声の確定待ちが続いています．未確定の音声は回答に使わず，認識を復帰します．")
+        }
+    }
+    private func completeInterruptedQuestion() {
+        guard let lastTurnUpdate,let next=InterruptedQuestionCompletion.provisional(lastTurnUpdate) else {return}
+        self.lastTurnUpdate=next;callback?(next)
+    }
     func stop() {
-        generation=UUID();activeTurn=nil
+        completionWatchdog?.cancel();completionWatchdog=nil
+        endpointCompletion?.stop();endpointCompletion=nil
+        generation=UUID();activeTurn=nil;lastTurnUpdate=nil
         ingress?.stop();ingress=nil;request=nil
         task?.cancel();task=nil;recognizer=nil
         if let engine {if tapInstalled {engine.inputNode.removeTap(onBus:0)};engine.stop()}
-        engine=nil;tapInstalled=false;callback=nil;failure=nil;turnOrder=0;revision=0
-        logicalOrder=0;logicalStart=nil;completedText=""
+        engine=nil;tapInstalled=false;callback=nil;failure=nil;turnOrder=0;turns=LegacyRecognitionTurns()
     }
 }

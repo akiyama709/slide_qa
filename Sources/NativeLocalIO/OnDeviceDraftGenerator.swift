@@ -2,6 +2,17 @@ import Foundation
 import FoundationModels
 import RealDeckEvidenceCore
 
+/// Resource bound for an SDK call that ignores cancellation, not a question or
+/// retry counter. One retired call leaves a slot for the following question.
+struct ModelInvocationSlots {
+    private var active:Set<UUID>=[]
+    mutating func begin()->UUID? {
+        guard active.count<2 else {return nil}
+        let token=UUID();active.insert(token);return token
+    }
+    mutating func finish(_ token:UUID) {active.remove(token)}
+}
+
 @Generable private enum ExcerptToken:CaseIterable,Equatable {
     case e01,e02,e03,e04,e05,e06,e07,e08,e09,e10,e11,e12
     case e13,e14,e15,e16,e17,e18,e19,e20,e21,e22,e23,e24
@@ -63,6 +74,57 @@ public struct LocalModelDiagnostic:Codable,Sendable {
     public let connectionFailureMentioned:Bool
     public let errorChain:[ErrorLink]
 }
+/// Preserve only domain/code through both standard NSError underlying-error
+/// forms. Never copy userInfo descriptions, prompts or localized source text.
+enum LocalModelErrorMetadata {
+    static func links(_ error:Error)->[LocalModelDiagnostic.ErrorLink] {
+        var waiting=[error as NSError],seen=Set<ObjectIdentifier>()
+        var result:[LocalModelDiagnostic.ErrorLink]=[]
+        while !waiting.isEmpty,result.count<12 {
+            let current=waiting.removeFirst()
+            guard seen.insert(ObjectIdentifier(current)).inserted else {continue}
+            result.append(.init(domain:current.domain,code:current.code))
+            if let child=current.userInfo[NSUnderlyingErrorKey] as? NSError {waiting.append(child)}
+            if let children=current.userInfo[NSMultipleUnderlyingErrorsKey] as? [NSError] {waiting.append(contentsOf:children.prefix(12))}
+        }
+        return result
+    }
+    static func hasModelManagerFailure(_ error:Error)->Bool {
+        links(error).contains{$0.domain=="ModelManagerServices.ModelManagerError"}
+    }
+    static func failure(_ error:Error,fallback:LocalDraftFailure)->LocalDraftFailure {
+        hasModelManagerFailure(error) ? .modelServiceFailed:fallback
+    }
+}
+/// Persist only the existing metadata diagnostic, never proposals or reviews
+/// (those contain private questions/passages and must not enter this journal).
+public enum LocalModelJournal {
+    private struct Entry:Encodable {
+        let atUTC:String
+        let appVersion:String
+        let hostBundleID:String
+        let executableName:String
+        let osVersion:String
+        let sandboxContainerVariablePresent:Bool
+        let diagnostic:LocalModelDiagnostic
+    }
+    public static func record(_ diagnostic:LocalModelDiagnostic,at customURL:URL?=nil) {
+        let file=customURL ?? FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask).first?
+            .appendingPathComponent("SlideQA/Diagnostics/last-model-state.json")
+        guard let file else {return}
+        do {
+            try FileManager.default.createDirectory(at:file.deletingLastPathComponent(),withIntermediateDirectories:true)
+            let entry=Entry(atUTC:ISO8601DateFormatter().string(from:Date()),
+                appVersion:Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "test",
+                hostBundleID:Bundle.main.bundleIdentifier ?? "none",
+                executableName:Bundle.main.executableURL?.lastPathComponent ?? "none",
+                osVersion:ProcessInfo.processInfo.operatingSystemVersionString,
+                sandboxContainerVariablePresent:ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil,
+                diagnostic:diagnostic)
+            try JSONEncoder().encode(entry).write(to:file,options:.atomic)
+        } catch { /* Metadata recording must not interrupt an answer. */ }
+    }
+}
 public struct LocalReviewDiagnostic:Codable,Sendable {
     public let scope="evidence-first-fresh-review-per-sentence-maximum-three"
     public let referenceKind="host-retrieved-original-ranges-not-entailment-proof"
@@ -101,6 +163,7 @@ public struct LocalReviewDiagnostic:Codable,Sendable {
     """
     private var busy=false
     private var preparedWriter:LanguageModelSession?
+    private var invocations=ModelInvocationSlots()
     private let diagnostics:(@MainActor (LocalModelDiagnostic)->Void)?
     private let proposalObserver:(@MainActor (LocalDraftProposal)->Void)?
     private let reviewObserver:(@MainActor (LocalReviewDiagnostic)->Void)?
@@ -130,12 +193,7 @@ public struct LocalReviewDiagnostic:Codable,Sendable {
         }
         if let categoryOverride {category=categoryOverride}
         let native=error.map{$0 as NSError}
-        var chain:[LocalModelDiagnostic.ErrorLink]=[]
-        var cursor=native
-        while let current=cursor,chain.count<6 {
-            chain.append(.init(domain:current.domain,code:current.code))
-            cursor=current.userInfo[NSUnderlyingErrorKey] as? NSError
-        }
+        let chain=error.map(LocalModelErrorMetadata.links) ?? []
         let description=error.map{String(describing:$0).lowercased()} ?? ""
         diagnostics?(LocalModelDiagnostic(stage:stage,category:category,errorDomain:native?.domain,errorCode:native?.code,
             permissionFailureMentioned:["sandbox","permission","denied","not permitted"].contains(where:description.contains),
@@ -164,12 +222,18 @@ public struct LocalReviewDiagnostic:Codable,Sendable {
         return try await review(draft,claims:claims,sourceMap:LocalSourceMap(sources:request.sources),request:request,model:model)
     }
     public func generate(_ request:LocalDraftRequest) async throws -> GuardedLocalDraft {
+        guard let invocation=invocations.begin() else {
+            diagnostic("writer-blocked",categoryOverride:"previousInvocationsStillRunning")
+            throw LocalDraftFailure.modelStillRunning
+        }
+        defer {invocations.finish(invocation)}
         let excerpts=try LocalExcerptMap(sources:request.sources).focused(question:request.question,contextLabels:request.contextLabels)
         let sourceMap=excerpts.sourceMap
-        while busy {try checkDeadline(request);try await Task.sleep(for:.milliseconds(20))}
         try checkDeadline(request)
-        busy=true
-        defer {busy=false}
+        // LiveQASession serializes current requests. A cancelled SDK response
+        // may still unwind later; never let it lock every following question.
+        // Each invocation below owns a distinct LanguageModelSession. The only
+        // prewarmed writer is consumed before the first await and never reused.
         let model=SystemLanguageModel.default
         guard model.isAvailable else {throw LocalDraftFailure.modelUnavailable}
         guard model.supportsLocale(Locale(identifier:"ja-JP")) else {throw LocalDraftFailure.japaneseUnavailable}
@@ -247,7 +311,10 @@ public struct LocalReviewDiagnostic:Codable,Sendable {
             throw LocalDraftFailure.generationFailed
         } catch is CancellationError {throw CancellationError()}
         catch let error as LocalDraftFailure {throw error}
-        catch {diagnostic("writer-failed",error:error);throw LocalDraftFailure.generationFailed}
+        catch {
+            diagnostic("writer-failed",error:error)
+            throw LocalModelErrorMetadata.failure(error,fallback:.generationFailed)
+        }
     }
     /// A diagnostic-only entry point. It returns observations, never a displayable
     /// draft, and deliberately evaluates the critic independently of production
@@ -350,7 +417,10 @@ public struct LocalReviewDiagnostic:Codable,Sendable {
                 try checkDeadline(request)
             } catch is CancellationError {throw CancellationError()}
             catch let error as LocalDraftFailure {throw error}
-            catch {diagnostic("review-failed",error:error);throw LocalDraftFailure.groundingReviewFailed}
+            catch {
+                diagnostic("review-failed",error:error)
+                throw LocalModelErrorMetadata.failure(error,fallback:.groundingReviewFailed)
+            }
             var quoteVerbatim=false
             do {try sourceMap.requireVerbatimExcerpt(quote,citationIDs:citedSources.map(\.id));quoteVerbatim=true} catch {}
             let referencesSufficient=modelReferencesSufficient && quoteVerbatim

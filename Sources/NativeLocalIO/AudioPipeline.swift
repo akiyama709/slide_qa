@@ -9,7 +9,7 @@ import RealDeckEvidenceCore
 typealias RecognitionUpdate = LiveRecognitionUpdate
 
 public enum AudioFailure: LocalizedError {
-    case unavailable, japaneseNotInstalled, format, conversion, microphoneLocked, microphoneDenied, speechDenied, overflow
+    case unavailable, japaneseNotInstalled, format, conversion, microphoneLocked, microphoneDenied, speechDenied, overflow, recognitionInterrupted
     public var errorDescription: String? {
         switch self {
         case .unavailable: "このMacではSpeechTranscriberを利用できません．"
@@ -20,6 +20,7 @@ public enum AudioFailure: LocalizedError {
         case .microphoneDenied: "このアプリのマイク権限がありません．"
         case .speechDenied: "このアプリの音声認識の許可がありません．本人の開始操作で確認してください．"
         case .overflow: "音声処理が追いつかず，入力バッファが満杯になりました．"
+        case .recognitionInterrupted: "音声認識サービスが一時的に利用できません．再接続します．"
         }
     }
 }
@@ -100,6 +101,7 @@ public final class NativeAudioPipeline {
     private var generation = UUID()
     private var assembler = TranscriptAssembler()
     private var sourceRevisions:[Int:Int]=[:]
+    private var endpointCompletion:SpeechQuestionCompletion?
     private var legacy:LegacyOfflineMicrophone?
     public var recognizerName: String { legacy == nil ? "SpeechTranscriber":"SFSpeechRecognizer" }
     var replayStartUptime: Double = 0
@@ -116,6 +118,15 @@ public final class NativeAudioPipeline {
         guard let locale = installed.first(where: { $0.language.languageCode?.identifier == "ja" }) else { throw AudioFailure.japaneseNotInstalled }
         let before = ProcessInfo.processInfo.systemUptime
         let session = expectedSession
+        endpointCompletion=SpeechQuestionCompletion {[weak self] update in
+            guard let self,self.generation==session,!update.final,
+                  self.sourceRevisions[update.order]==update.sourceRevision,
+                  let previous=update.sourceRevision,previous<Int.max else {return}
+            self.sourceRevisions[update.order]=previous+1
+            onUpdate(.init(id:update.id,order:update.order,text:update.text,final:true,
+                audioStart:update.audioStart,audioEnd:update.audioEnd,alternatives:update.alternatives,
+                sourceRevision:previous+1,provisionalCompletion:true,stableCompletion:true))
+        }
         let module: any SpeechModule
         let startResults: @MainActor () -> Task<Void, Never>
         let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [],
@@ -159,6 +170,7 @@ public final class NativeAudioPipeline {
                 Task { @MainActor in
                     guard let self, self.generation == session else { return }
                     self.assembler.endpoint(voicedEnd)
+                    self.endpointCompletion?.endpoint(voicedEnd)
                     onEndpoint(voicedEnd)
                     do { try await analyzer.finalize(through: CMTime(seconds: through, preferredTimescale: 48_000)) }
                     catch {if self.generation == session {onFailure("音声区切りを確定できませんでした．")}}
@@ -179,8 +191,9 @@ public final class NativeAudioPipeline {
         guard generation == session, !Task.isCancelled else { return }
         for value in assembler.accept(.init(start: start,end: end,text: text,final: final,alternatives: alternatives)) {
             sourceRevisions[value.group,default:0] += 1
-            callback(.init(id: "\(session.uuidString):u\(value.group)", order: value.group, text: value.text, final: value.final,
-                audioStart: value.start, audioEnd: value.end, alternatives: value.alternatives,sourceRevision:sourceRevisions[value.group]))
+            let update=LiveRecognitionUpdate(id: "\(session.uuidString):u\(value.group)", order: value.group, text: value.text, final: value.final,
+                audioStart: value.start, audioEnd: value.end, alternatives: value.alternatives,sourceRevision:sourceRevisions[value.group])
+            endpointCompletion?.receive(update);callback(update)
         }
     }
 
@@ -219,7 +232,7 @@ public final class NativeAudioPipeline {
             let ingress = try await prepare(inputFormat: format, expectedSession: session,
                 onUpdate: onUpdate, onEndpoint: onEndpoint, onFailure: onFailure)
             try checkSession(session)
-            node.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
+            node.installTap(onBus: 0, bufferSize: 2048, format: format) { @Sendable buffer, _ in
                 do { try ingress.push(buffer) }
                 catch { Task { @MainActor in onFailure("音声入力を処理できませんでした．") } }
             }
@@ -252,6 +265,7 @@ public final class NativeAudioPipeline {
         generation = UUID()
         assembler = TranscriptAssembler()
         sourceRevisions=[:]
+        endpointCompletion?.stop();endpointCompletion=nil
         let previousEngine=engine
         let previousAnalyzer=analyzer
         let previousTask=resultTask

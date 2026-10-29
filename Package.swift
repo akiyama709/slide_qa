@@ -15,6 +15,6 @@ let package=Package(
         .target(name:"NativeLocalIO",dependencies:["RealDeckEvidenceCore","SlideQACore"]),
         .executableTarget(name:"RealDeckEvidenceApp",dependencies:["RealDeckEvidenceCore","SlideQACore","NativeLocalIO"]),
         .executableTarget(name:"DemoDeckCheck",dependencies:["RealDeckEvidenceCore","SlideQACore"]),
-        .testTarget(name:"RealDeckEvidenceTests",dependencies:["RealDeckEvidenceCore","SlideQACore","NativeLocalIO"])
+        .testTarget(name:"RealDeckEvidenceTests",dependencies:["RealDeckEvidenceCore","SlideQACore","NativeLocalIO","RealDeckEvidenceApp"])
     ],swiftLanguageModes:[.v6]
 )

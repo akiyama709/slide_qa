@@ -20,6 +20,7 @@ public struct QuestionTicket: Codable, Sendable {
     public var confirmed: Bool
     /// nil in legacy tickets. A VAD turn ending is not proof the question ended.
     public var awaitingContinuation: Bool? = nil
+    public var sourceSegment:Int?=nil
     public var isAwaitingContinuation: Bool { awaitingContinuation == true }
 }
 public enum QuestionChange: Sendable {
@@ -37,11 +38,12 @@ public struct IncrementalQuestions: Sendable {
     private struct Turn: Sendable {
         var id:String;var order:Int;var text:String;var final:Bool
         var sourceRevision:Int?;var sourceEnd:Double?
+        var provisionalFinal:Bool
     }
     private struct ChoiceBoundary:Sendable {
         var order:Int;var id:String;var fragment:String;var allFinal:Bool;var baseFinal:Bool
     }
-    private struct QuestionOrigin:Hashable,Sendable {var turnOrder:Int;var position:Int}
+    private struct QuestionOrigin:Hashable,Sendable {var turnOrder:Int;var segment:Int;var position:Int}
     private var initialPhase: LiveSpeakingPhase
     public private(set) var phase: LiveSpeakingPhase
     public private(set) var epoch = 0
@@ -60,22 +62,29 @@ public struct IncrementalQuestions: Sendable {
     /// permanently retired. UI cancellation must outlive an unstable snapshot.
     public var retainedSourceQuestionIDs:Set<String> {Set(identitiesByOrigin.values)}
     public func isCurrent(_ lease: QuestionLease) -> Bool { current[lease.id]?.lease == lease }
+    public func isProvisional(turnID:String)->Bool {turns[turnID]?.provisionalFinal == true}
     private static func ordered(_ a: QuestionTicket, _ b: QuestionTicket) -> Bool {
-        (a.turnOrder, a.position) < (b.turnOrder, b.position)
+        (a.turnOrder,a.sourceSegment ?? 0,a.position) < (b.turnOrder,b.sourceSegment ?? 0,b.position)
     }
     /// The adapter must supply source turn order; first response arrival is not a source clock.
-    public mutating func consume(turnID: String, order: Int, text: String, final: Bool,
-                                 deck: LiveQuestionDeck,sourceRevision:Int?=nil,sourceEnd:Double?=nil) throws -> [QuestionChange] {
-        guard (0..<1_000_000).contains(order) else { throw QuestionPipelineFailure.invalidOrder }
+    public mutating func consume(turnID: String, order: Int, text: String, final sourceFinal: Bool,
+                                 deck: LiveQuestionDeck,sourceRevision:Int?=nil,sourceEnd:Double?=nil,
+                                 provisionalFinal sourceProvisionalFinal:Bool=false) throws -> [QuestionChange] {
+        guard order>=0 else { throw QuestionPipelineFailure.invalidOrder }
         if order<=retiredThroughOrder {return []}
         guard text.utf8.count <= 16_384 else { throw QuestionPipelineFailure.inputLimit }
         guard !turns.values.contains(where: { $0.order == order && $0.id != turnID }),
               turns[turnID].map({ $0.order == order }) ?? true else { throw QuestionPipelineFailure.conflictingTurnOrder }
         if let sourceRevision {
-            guard (0..<1_000_000).contains(sourceRevision),let sourceEnd,sourceEnd.isFinite,sourceEnd>=0 else {throw QuestionPipelineFailure.invalidRevision}
+            guard sourceRevision>=0,let sourceEnd,sourceEnd.isFinite,sourceEnd>=0 else {throw QuestionPipelineFailure.invalidRevision}
         }
+        let stableRepeat=turns[turnID].map {old in
+            old.provisionalFinal && !sourceFinal && old.text==text
+        } ?? false
+        let final=sourceFinal || stableRepeat
+        let provisionalFinal=sourceProvisionalFinal || stableRepeat
         if turns[turnID] == nil,turns.count>=64 {
-            guard let oldest=turns.values.min(by:{$0.order<$1.order}),oldest.final,
+            guard let oldest=turns.values.min(by:{$0.order<$1.order}),
                   order>oldest.order else {throw QuestionPipelineFailure.inputLimit}
             turns.removeValue(forKey:oldest.id)
             retiredThroughOrder=max(retiredThroughOrder,oldest.order)
@@ -95,18 +104,18 @@ public struct IncrementalQuestions: Sendable {
                 }
                 // Native fragment-final is not a sealed audio turn. Accept a
                 // subsequent partial only when its source audio end advanced.
-                if old.final && !final {
+                if old.final && !final && !old.provisionalFinal {
                     guard let previousEnd=old.sourceEnd,let sourceEnd,sourceEnd>previousEnd+0.00001 else {return []}
                 }
             } else {
                 if old.sourceRevision != nil || (old.final && !final) {return []}
             }
             if old.text == text && old.final == final {
-                turns[turnID]=Turn(id:turnID,order:order,text:text,final:final,sourceRevision:sourceRevision,sourceEnd:highWaterEnd)
+                turns[turnID]=Turn(id:turnID,order:order,text:text,final:final,sourceRevision:sourceRevision,sourceEnd:highWaterEnd,provisionalFinal:provisionalFinal)
                 return []
             }
         }
-        turns[turnID] = Turn(id:turnID,order:order,text:text,final:final,sourceRevision:sourceRevision,sourceEnd:highWaterEnd)
+        turns[turnID] = Turn(id:turnID,order:order,text:text,final:final,sourceRevision:sourceRevision,sourceEnd:highWaterEnd,provisionalFinal:provisionalFinal)
         var nextPhase = initialPhase
         var desired: [String: QuestionTicket] = [:]
         var desiredOrigins:[String:QuestionOrigin]=[:]
@@ -127,7 +136,8 @@ public struct IncrementalQuestions: Sendable {
                 previousBoundary=nil;previousCorrection=nil
             }
             let candidates=QuestionBoundaries.completeQuestions(body,final:turn.final,deck:deck)
-            guard candidates.count<=16 else {throw QuestionPipelineFailure.inputLimit}
+            // A recognition task can contain many consecutive questions before
+            // its SDK final arrives. Bound text/history, not question count.
             var consumedFirst:String?,nextBoundary:ChoiceBoundary?,correctedAnchor:QuestionTicket?
             if let waiting=previousCorrection,waiting.order+1==turn.order,
                !QuestionBoundaries.hasIndependentIntroduction(body),!body.contains("「"),!body.contains("『") {
@@ -172,17 +182,19 @@ public struct IncrementalQuestions: Sendable {
                 }
             }
             var lastID:String?
-            for (position,candidate) in candidates.enumerated() {
-                if position==0,let consumedFirst,
+            for (index,candidate) in candidates.enumerated() {
+                let position=candidate.sourcePosition ?? index
+                if index==0,let consumedFirst,
                    QuestionBoundaries.fingerprint(consumedFirst)==QuestionBoundaries.fingerprint(candidate.text) {continue}
-                let replacement=position==0 ? correctedAnchor:nil
-                let origin=QuestionOrigin(turnOrder:turn.order,position:position)
+                let replacement=index==0 ? correctedAnchor:nil
+                let origin=QuestionOrigin(turnOrder:turn.order,segment:candidate.sourceSegment,position:position)
                 // A correction may retain an older turn's ID. Keep the ID
                 // already bound to its source origin when that older turn
                 // leaves the history window; otherwise a UI cancellation
                 // could be defeated by inventing a new ID for the same input.
                 let establishedID=identitiesByOrigin[origin]
-                let id=establishedID ?? replacement?.lease.id ?? String(format:"e%d-t%06d-q%03d",epoch,turn.order,position+1)
+                let suffix=candidate.sourceSegment==0 ? "":String(format:"-c%03d",candidate.sourceSegment)
+                let id=establishedID ?? replacement?.lease.id ?? String(format:"e%d-t%06d",epoch,turn.order)+suffix+String(format:"-q%03d",position+1)
                 identitiesByOrigin[origin]=id
                 // A correction is a new source intent even when its words are
                 // unchanged. The stable source origin prevents replaying that
@@ -196,6 +208,7 @@ public struct IncrementalQuestions: Sendable {
                     turnID:replacement?.turnID ?? turn.id,turnOrder:replacement?.turnOrder ?? turn.order,
                     position:replacement?.position ?? position,text:candidate.text,
                     page:candidate.slide?.number ?? 0,title:candidate.slide?.title ?? "該当なし",confirmed:turn.final)
+                ticket.sourceSegment=replacement?.sourceSegment ?? candidate.sourceSegment
                 // A disappearing/unknown prefix is not authority to redisplay a
                 // withheld answer. Only the closed bridge or clear new intent releases it.
                 if same,replacement==nil,old?.isAwaitingContinuation==true {
@@ -246,6 +259,10 @@ public struct IncrementalQuestions: Sendable {
 }
 
 public enum QuestionBoundaries {
+    static func endsWithCancellation(_ text:String)->Bool {
+        guard let last=split(text,final:true).last(where:{!$0.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty}) else {return false}
+        return hasExplicitCancellationLeading(last)
+    }
     static func hasExplicitCancellationLeading(_ text:String)->Bool {
         let value=withoutQuotes(text).trimmingCharacters(in:.whitespacesAndNewlines)
         return value.range(of:#"^(?:(?:すみません|失礼しました)[、，,\s]*)?(?:今の|直前の|先ほどの|この)質問(?:を|は)(?:取り消します|取消します|取り下げます|キャンセルします)(?:[。．、，,!！\s]|$)"#,options:.regularExpression) != nil
@@ -427,6 +444,9 @@ public enum QuestionBoundaries {
             }
         }
         var output: [LiveQuestionCandidate] = []
+        var nextPosition=0
+        var sourceSegment=0
+        var correctionPosition:Int?
         for raw in chunks {
             var piece = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !piece.isEmpty else { continue }
@@ -437,18 +457,27 @@ public enum QuestionBoundaries {
                 let prefix = String(piece[..<marker.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
                 // A standalone correction retracts the last question. A correction inside an
                 // unfinished second clause must not erase the already completed first question.
-                if ["", "いえ、", "いえ，", "いいえ、", "いいえ，"].contains(prefix), !output.isEmpty { output.removeLast() }
+                if ["", "いえ、", "いえ，", "いいえ、", "いいえ，"].contains(prefix), !output.isEmpty {
+                    correctionPosition=output.removeLast().sourcePosition
+                }
                 piece = String(piece[marker.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
             }
             for intro in independentIntroductions where piece.hasPrefix(intro) && !(intro=="それと" && piece.hasPrefix("それとも")) { piece = String(piece.dropFirst(intro.count)).trimmingCharacters(in: .whitespacesAndNewlines) }
             let intent = withoutQuotes(piece)
-            if final,hasExplicitCancellationLeading(intent) {
-                if !output.isEmpty {output.removeLast()}
+            if hasExplicitCancellationLeading(intent) {
+                if final,!output.isEmpty {output.removeLast()}
+                sourceSegment+=1;nextPosition=0;correctionPosition=nil
                 continue
             }
-            guard LiveQuestionSyntax.isCompleteRequest(intent) else {continue}
-            guard !["質問はあります", "質問がありますか", "ご質問をどうぞ", "質問をお願いします", "という言葉", "という表現", "と引用"].contains(where: intent.contains) else { continue }
-            output.append(LiveQuestionCandidate(text: piece, slide: LiveQuestionMatcher.match(intent, deck: deck)))
+            guard LiveQuestionSyntax.isCompleteRequest(intent,finalUtterance:final) else {continue}
+            guard !["質問はあります", "質問がありますか", "ご質問をどうぞ", "質問をお願いします"].contains(where: intent.contains) else { continue }
+            // A request to define a word/expression is substantive. Quoted
+            // question text alone still cannot create intent outside the quote.
+            let position=correctionPosition ?? nextPosition
+            if correctionPosition == nil {nextPosition+=1}
+            correctionPosition=nil
+            output.append(LiveQuestionCandidate(text:piece,slide:LiveQuestionMatcher.match(piece,deck:deck),
+                sourcePosition:position,sourceSegment:sourceSegment))
         }
         return output
     }
@@ -460,6 +489,7 @@ public enum QuestionBoundaries {
             if "」』”".contains(c) { quote = max(0, quote - 1) }
             let decimalPoint=c == "．" && i>0 && i+1<chars.count && chars[i-1].isNumber && chars[i+1].isNumber
             if quote == 0 && "。．？！?!\n".contains(c) && !decimalPoint {
+                if "?？".contains(c) {buffer.append(c)}
                 result.append(buffer); buffer = ""; continue
             }
             buffer.append(c)

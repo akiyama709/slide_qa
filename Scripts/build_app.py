@@ -29,11 +29,10 @@ def main() -> None:
         raise SystemExit("SwiftPM did not produce the requested executable.")
     contents = app / "Contents"
     executable_dir = contents / "MacOS"
-    resources = contents / "Resources" / "Deck"
+    resources = contents / "Resources"
     executable_dir.mkdir(parents=True)
     resources.mkdir(parents=True)
     shutil.copy2(binary, executable_dir / "SlideQAPrototype")
-    shutil.copy2(root / "Sources" / "SlideQACore" / "Resources" / "demo.json", resources / "demo.json")
     for language in ("en", "ja"):
         shutil.copytree(root / "Sources" / "SlideQACore" / "Resources" / (language + ".lproj"),
                         contents / "Resources" / (language + ".lproj"))
@@ -45,8 +44,8 @@ def main() -> None:
         "CFBundleDevelopmentRegion": "en",
         "CFBundleLocalizations": ["en", "ja"],
         "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": "0.25.0",
-        "CFBundleVersion": "2500",
+        "CFBundleShortVersionString": "0.32.0",
+        "CFBundleVersion": "3200",
         "LSMinimumSystemVersion": "26.0",
         "NSPrincipalClass": "NSApplication",
         "NSHighResolutionCapable": True,

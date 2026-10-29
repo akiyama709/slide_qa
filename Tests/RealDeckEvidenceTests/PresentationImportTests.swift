@@ -7,7 +7,7 @@ import CryptoKit
 import SlideQACore
 import RealDeckEvidenceCore
 
-private enum ImportFixture {
+enum ImportFixture {
     @discardableResult
     static func file<T>(_ data:Data,fileExtension ext:String,body:(URL)throws->T) throws -> T {
         let directory=FileManager.default.temporaryDirectory.appendingPathComponent("slideqa-import-"+UUID().uuidString)

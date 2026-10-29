@@ -8,15 +8,37 @@ public struct LocalDraftRequest: Sendable {
     public let sources: [EvidencePassage]
     public let contextLabels:[String]
     public let createdAt:ContinuousClock.Instant
-    public init(ticket: QuestionTicket, reference: EvidenceSearchResult) throws {
-        guard ticket.confirmed, !ticket.isAwaitingContinuation, ticket.page > 0,
-              let candidate=reference.candidates.first(where:{$0.page == ticket.page && $0.title == ticket.title}),
-              !candidate.passages.isEmpty else { throw LocalDraftFailure.insufficientSources }
-        let size=candidate.passages.reduce(0){$0+$1.text.utf8.count}
+    public init(ticket: QuestionTicket, reference: EvidenceSearchResult,allowAmbiguousSources:Bool=false) throws {
+        guard ticket.confirmed,!ticket.isAwaitingContinuation,LiveQuestionMatcher.permitsQuestion(ticket.text) else {throw LocalDraftFailure.insufficientSources}
+        let candidate:EvidenceCandidate
+        let selected:[EvidencePassage]
+        if ticket.page>0,let exact=reference.candidates.first(where:{$0.page==ticket.page && $0.title==ticket.title}),!exact.passages.isEmpty {
+            candidate=exact;selected=exact.passages
+        } else if allowAmbiguousSources,reference.disposition == .ambiguous,
+                  let first=reference.candidates.first,!first.passages.isEmpty {
+            candidate=first
+            // Keep whole source passages, preferring qualified speaker notes.
+            // Only query-related candidates selected by the index are eligible.
+            selected=Array(reference.candidates.compactMap {
+                $0.passages.first(where:{$0.source == .speakerNotes}) ?? $0.passages.first
+            }.prefix(3))
+        } else {throw LocalDraftFailure.insufficientSources}
+        guard !selected.isEmpty else {throw LocalDraftFailure.insufficientSources}
+        let size=selected.reduce(0){$0+$1.text.utf8.count}
         guard size <= 20_000, ticket.text.count <= 4_000 else { throw LocalDraftFailure.inputLimit }
-        lease=ticket.lease;question=ticket.text;page=ticket.page;title=ticket.title;sources=candidate.passages
-        contextLabels=candidate.contextLabels
+        lease=ticket.lease;question=ticket.text;page=candidate.page;title=candidate.title;sources=selected
+        contextLabels=reference.candidates.filter{c in selected.contains{$0.page==c.page}}.flatMap(\.contextLabels)
         createdAt = .now
+    }
+    /// Queuing behind an earlier question is not model execution time.
+    /// Preserve the exact lease and sources; only start the execution clock.
+    func startingExecution(now:ContinuousClock.Instant = .now)->Self {
+        Self(lease:lease,question:question,page:page,title:title,sources:sources,contextLabels:contextLabels,createdAt:now)
+    }
+    private init(lease:QuestionLease,question:String,page:Int,title:String,sources:[EvidencePassage],
+                 contextLabels:[String],createdAt:ContinuousClock.Instant) {
+        self.lease=lease;self.question=question;self.page=page;self.title=title
+        self.sources=sources;self.contextLabels=contextLabels;self.createdAt=createdAt
     }
 }
 
@@ -58,13 +80,15 @@ public struct GuardedLocalDraft: Sendable {
     }
 }
 public enum LocalDraftFailure: Error, Equatable, Sendable {
-    case modelUnavailable, japaneseUnavailable, insufficientSources, inputLimit,
+    case modelUnavailable, modelStillRunning, modelServiceFailed, japaneseUnavailable, insufficientSources, inputLimit,
          invalidCitations, invalidText, verbatimOnly, unsupportedNumbers, qualificationMissing,
          groundingReviewFailed, subjectMismatch, unsupportedTerms, deadlineExceeded, generationFailed,
          questionNotAnswered,unclearResponse,sourceRelationMismatch
     public var message: String {
         switch self {
         case .modelUnavailable: "端末内モデルを利用できません．モデルの取得や外部送信には切り替えません．"
+        case .modelStillRunning: "前のモデル処理の終了を確認できないため，新規生成を保留しています．質問の受付と原文表示は続けます．"
+        case .modelServiceFailed: "端末内AIのモデルサービスで生成に失敗しました．認識と原文の参照は続けます．"
         case .japaneseUnavailable: "端末内モデルの日本語対応を確認できません．"
         case .insufficientSources: "質問に対応する資料根拠を確定できないため，生成を保留しました．"
         case .inputLimit: "生成へ渡す質問・根拠の上限を超えました．原文の留保を削って続行しません．"

@@ -32,9 +32,9 @@ import RealDeckEvidenceCore
         }
         #expect(throws:(any Error).self){try Deck.validated(data:data(title:" "))}
         #expect(throws:(any Error).self){try Deck.validated(data:data(declaredCount:3))}
-        #expect(throws:(any Error).self){try Deck.validated(data:data(pages:Array(1...501)))}
+        #expect(try Deck.validated(data:data(pages:Array(1...501))).pageCount==501)
     }
-    @Test func inputSizeAndAmbiguousOrNetworkArgumentsAreRejected() throws {
+    @Test func malformedJSONAndAmbiguousOrNetworkArgumentsAreRejected() throws {
         #expect(throws:(any Error).self){try Deck.validated(data:Data(repeating:0,count:5*1024*1024+1))}
         for args in [["check","--deck"],["check","--deck=https://example.invalid/deck.json"],
             ["check","--deck","https://example.invalid/deck.json"],

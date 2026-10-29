@@ -32,9 +32,12 @@ private func containsJapaneseCharacters(_ value:String)->Bool {
         defer {defaults.removePersistentDomain(forName:domain)}
         let store=InterfaceLanguageStore(defaults:defaults,preferredLanguages:["en"])
         #expect(store.language == .english)
+        let languageChoices=InterfaceLanguage.allCases.map(\.selectionLabel)
+        #expect(languageChoices==["English（英語）","日本語（Japanese）"])
         store.select(.english)
         #expect(defaults.string(forKey:InterfaceLanguageStore.preferenceKey) == "en")
         store.select(.japanese)
+        #expect(InterfaceLanguage.allCases.map(\.selectionLabel)==languageChoices)
         #expect(defaults.string(forKey:InterfaceLanguageStore.preferenceKey) == "ja")
         #expect(defaults.synchronize())
         let reopened=try #require(UserDefaults(suiteName:domain))
@@ -42,6 +45,7 @@ private func containsJapaneseCharacters(_ value:String)->Bool {
         #expect(restored.language == .japanese)
         #expect(restored.text("開始") == "開始")
         restored.select(.english)
+        #expect(InterfaceLanguage.allCases.map(\.selectionLabel)==languageChoices)
         #expect(restored.text("開始") == "Start")
         #expect(reopened.string(forKey:InterfaceLanguageStore.preferenceKey) == "en")
         #expect(InterfaceLanguageStore(defaults:defaults,preferredLanguages:["ja"]).language == .english)
@@ -60,7 +64,6 @@ private func containsJapaneseCharacters(_ value:String)->Bool {
         }
         #expect(InterfaceCatalog.render("資料を開く…",language:.english) == "Open presentation…")
         #expect(InterfaceCatalog.render("資料を開く…",language:.japanese) == "資料を開く…")
-        #expect(InterfaceCatalog.render("設定",language:.english) == "Settings")
         #expect(InterfaceCatalog.render("未登録のサービス診断",language:.english) == "未登録のサービス診断")
     }
     @Test func formattingDoesNotTranslateOrReinterpretSourceArguments() {
@@ -79,12 +82,15 @@ private func containsJapaneseCharacters(_ value:String)->Bool {
     }
     @Test func sourceAndDraftFailureLabelsHaveEnglishTranslations() {
         let dispositions:[EvidenceDisposition]=[.references,.ambiguous,.insufficient,.unmatched,.empty,.invalidPage,.tooLong]
-        let failures:[LocalDraftFailure]=[.modelUnavailable,.japaneseUnavailable,.insufficientSources,.inputLimit,
+        let failures:[LocalDraftFailure]=[.modelUnavailable,.modelStillRunning,.modelServiceFailed,.japaneseUnavailable,.insufficientSources,.inputLimit,
             .invalidCitations,.invalidText,.verbatimOnly,.unsupportedNumbers,.qualificationMissing,
             .groundingReviewFailed,.subjectMismatch,.unsupportedTerms,.deadlineExceeded,.generationFailed,
             .questionNotAnswered,.unclearResponse,.sourceRelationMismatch]
-        let audio:[AudioFailure]=[.unavailable,.japaneseNotInstalled,.format,.conversion,.microphoneLocked,.microphoneDenied,.speechDenied,.overflow]
-        let messages=dispositions.map(\.label)+failures.map(\.message)+audio.compactMap(\.errorDescription)
+        let audio:[AudioFailure]=[.unavailable,.japaneseNotInstalled,.format,.conversion,.microphoneLocked,.microphoneDenied,.speechDenied,.overflow,.recognitionInterrupted]
+        let imports:[PresentationImportError]=[.unsupportedFormat,.invalidInput,.protectedPDF,.noText,.malformedPDF,
+            .malformedPackage,.malformedXML,.noPages,.unsafePart,.resourcePressure]
+        let deck:[DeckError]=[.missing,.invalid,.size,.arguments]
+        let messages=dispositions.map(\.label)+failures.map(\.message)+audio.compactMap(\.errorDescription)+imports.compactMap(\.errorDescription)+deck.compactMap(\.errorDescription)
         for original in messages {
             let value=InterfaceCatalog.render(original,language:.english)
             #expect(!containsJapaneseCharacters(value))

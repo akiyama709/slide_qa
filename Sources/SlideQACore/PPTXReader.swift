@@ -1,7 +1,8 @@
 import Foundation
 import zlib
 
-/// Bounded ZIP reader for OOXML text only. Never writes archive entries to disk.
+/// OOXML ZIP reader with chunked inflation and cancellation/memory-pressure checks.
+/// Never writes archive entries to disk.
 private struct OOXMLArchive {
     struct Entry {let flags:Int;let method:Int;let crc:UInt32;let compressed:Int;let size:Int;let offset:Int}
     let data:Data
@@ -17,12 +18,13 @@ private struct OOXMLArchive {
             if u32(p)==0x06054b50,p+22+u16(p+20)==data.count {end=p;break}
         }
         guard let end,u16(end+4)==0,u16(end+6)==0,u16(end+8)==u16(end+10),
-              (1...8000).contains(u16(end+10)),u32(end+12) != 0xffffffff,u32(end+16) != 0xffffffff else {throw PresentationImportError.malformedPackage}
+              u16(end+10)>0,u16(end+10) != 0xffff,u32(end+12) != 0xffffffff,u32(end+16) != 0xffffffff else {throw PresentationImportError.malformedPackage}
         let start=u32(end+16),length=u32(end+12)
         guard start>=0,start+length==end else {throw PresentationImportError.malformedPackage}
         directoryOffset=start
         var p=start;var result:[String:Entry]=[:]
         for _ in 0..<u16(end+10) {
+            try ImportResources.check()
             guard p+46<=end,u32(p)==0x02014b50 else {throw PresentationImportError.malformedPackage}
             let nameLength=u16(p+28),extra=u16(p+30),comment=u16(p+32),next=p+46+nameLength+extra+comment
             guard next<=end,nameLength>0,
@@ -38,8 +40,8 @@ private struct OOXMLArchive {
         entries=result
     }
     func xml(_ name:String) throws -> Data {
-        try Task.checkCancellation()
-        guard let e=entries[name],e.size>0,e.size<=4*1024*1024,e.compressed<=100*1024*1024 else {throw PresentationImportError.malformedPackage}
+        try ImportResources.check()
+        guard let e=entries[name],e.size>0 else {throw PresentationImportError.malformedPackage}
         func u16(_ p:Int)->Int {Int(data[p]) | Int(data[p+1])<<8}
         func u32(_ p:Int)->Int {u16(p) | u16(p+2)<<16}
         let p=e.offset
@@ -47,30 +49,50 @@ private struct OOXMLArchive {
         let begin=p+30+u16(p+26)+u16(p+28)
         guard begin<=directoryOffset,begin+e.compressed<=directoryOffset,
               String(data:data[(p+30)..<(p+30+u16(p+26))],encoding:.utf8)==name else {throw PresentationImportError.malformedPackage}
-        let compressed=Data(data[begin..<(begin+e.compressed)])
+        let compressed=data[begin..<(begin+e.compressed)]
         let output:Data
         switch e.method {
         case 0:
             guard compressed.count==e.size else {throw PresentationImportError.malformedPackage};output=compressed
         case 8:
             var stream=z_stream()
-            guard inflateInit2_(&stream,-MAX_WBITS,ZLIB_VERSION,Int32(MemoryLayout<z_stream>.size))==Z_OK else {throw PresentationImportError.malformedPackage}
+            let initialized=inflateInit2_(&stream,-MAX_WBITS,ZLIB_VERSION,Int32(MemoryLayout<z_stream>.size))
+            if initialized==Z_MEM_ERROR {throw PresentationImportError.resourcePressure}
+            guard initialized==Z_OK else {throw PresentationImportError.malformedPackage}
             defer {inflateEnd(&stream)}
-            var decoded=Data(count:e.size)
-            let status=compressed.withUnsafeBytes {src in decoded.withUnsafeMutableBytes {dst in
+            var decoded=Data()
+            decoded.reserveCapacity(min(e.size,64*1024))
+            try compressed.withUnsafeBytes {src in
                 stream.next_in=UnsafeMutablePointer(mutating:src.bindMemory(to:Bytef.self).baseAddress)
                 stream.avail_in=uInt(compressed.count)
-                stream.next_out=dst.bindMemory(to:Bytef.self).baseAddress;stream.avail_out=uInt(e.size)
-                return inflate(&stream,Z_FINISH)
-            }}
-            guard status==Z_STREAM_END,Int(stream.total_out)==e.size,Int(stream.total_in)==compressed.count else {throw PresentationImportError.malformedPackage}
+                var chunk=[UInt8](repeating:0,count:64*1024)
+                while true {
+                    try ImportResources.check()
+                    let consumed=stream.total_in
+                    let status=chunk.withUnsafeMutableBufferPointer {dst in
+                        stream.next_out=dst.baseAddress;stream.avail_out=uInt(dst.count)
+                        return inflate(&stream,Z_NO_FLUSH)
+                    }
+                    let produced=chunk.count-Int(stream.avail_out)
+                    guard produced<=e.size-decoded.count else {throw PresentationImportError.malformedPackage}
+                    decoded.append(contentsOf:chunk.prefix(produced))
+                    if status==Z_STREAM_END {
+                        guard Int(stream.total_out)==e.size,Int(stream.total_in)==compressed.count else {throw PresentationImportError.malformedPackage}
+                        break
+                    }
+                    if status==Z_MEM_ERROR {throw PresentationImportError.resourcePressure}
+                    guard status==Z_OK,(produced>0 || stream.total_in>consumed) else {throw PresentationImportError.malformedPackage}
+                }
+            }
             output=decoded
         default:throw PresentationImportError.malformedPackage
         }
         let checksum=output.withUnsafeBytes{crc32(0,$0.bindMemory(to:Bytef.self).baseAddress,uInt(output.count))}
         guard UInt32(checksum)==e.crc else {throw PresentationImportError.malformedPackage}
+        try ImportResources.check()
         return output
     }
+
 }
 
 private final class XMLTextReader:NSObject,XMLParserDelegate {
@@ -79,16 +101,26 @@ private final class XMLTextReader:NSObject,XMLParserDelegate {
     var relationships:[String:(target:String,type:String,external:Bool)]=[:]
     private var paragraph:String?;private var textDepth=0;private var depth=0
     private var shapeDepth:Int?;private var shapeParagraphs:[String]=[];private var placeholder:String?
-    private var characters=0;private var rejected=false
+    private var rejected=false
+    private var interruption:(any Error)?
     static func read(_ data:Data) throws -> XMLTextReader {
-        guard let text=String(data:data,encoding:.utf8),!text.uppercased().contains("<!DOCTYPE") else {throw PresentationImportError.malformedXML}
+        try ImportResources.check()
+        guard let text=String(data:data,encoding:.utf8),text.range(of:"<!DOCTYPE",options:.caseInsensitive)==nil else {throw PresentationImportError.malformedXML}
         let reader=XMLTextReader();let parser=XMLParser(data:data)
         parser.shouldProcessNamespaces=true;parser.shouldResolveExternalEntities=false;parser.externalEntityResolvingPolicy = .never
         parser.delegate=reader
-        guard parser.parse(),!reader.rejected else {throw PresentationImportError.malformedXML}
+        let parsed=parser.parse()
+        if let failure=reader.interruption {throw failure}
+        guard parsed,!reader.rejected else {throw PresentationImportError.malformedXML}
+        try ImportResources.check()
         return reader
     }
+    private func checkpoint(_ parser:XMLParser)->Bool {
+        do {try ImportResources.check();return true}
+        catch {interruption=error;parser.abortParsing();return false}
+    }
     func parser(_ parser:XMLParser,didStartElement name:String,namespaceURI:String?,qualifiedName:String?,attributes:[String:String]) {
+        guard checkpoint(parser) else {return}
         depth+=1
         if name=="sldId",let id=attributes.first(where:{$0.key.hasSuffix(":id")})?.value {slideIDs.append(id)}
         if name=="Relationship",let id=attributes["Id"],let target=attributes["Target"],let type=attributes["Type"] {
@@ -103,8 +135,7 @@ private final class XMLTextReader:NSObject,XMLParserDelegate {
         if name=="tab",paragraph != nil {paragraph!.append("\t")}
     }
     func parser(_ parser:XMLParser,foundCharacters string:String) {
-        characters+=string.count
-        if characters>2_000_000 {rejected=true;parser.abortParsing();return}
+        guard checkpoint(parser) else {return}
         if textDepth>0,paragraph != nil {paragraph!.append(string)}
     }
     func parser(_ parser:XMLParser,foundCDATA data:Data) {
@@ -145,15 +176,15 @@ enum PPTXReader {
         guard archive.entries["[Content_Types].xml"] != nil else {throw PresentationImportError.malformedPackage}
         let main=try XMLTextReader.read(archive.xml("ppt/presentation.xml"))
         let rels=try XMLTextReader.read(archive.xml("ppt/_rels/presentation.xml.rels"))
-        guard (1...500).contains(main.slideIDs.count) else {throw PresentationImportError.tooManyPages}
+        guard !main.slideIDs.isEmpty else {throw PresentationImportError.noPages}
         guard Set(main.slideIDs).count==main.slideIDs.count else {throw PresentationImportError.malformedPackage}
-        var slides:[Slide]=[];var paths:Set<String>=[];var extractedBytes=0;var empty=0;var inferred=0
+        var slides:[Slide]=[];var paths:Set<String>=[];var empty=0;var inferred=0
         for (i,id) in main.slideIDs.enumerated() {
-            try Task.checkCancellation()
+            try ImportResources.check()
             guard let link=rels.relationships[id],link.type.hasSuffix("/slide"),!link.external else {throw PresentationImportError.unsafePart}
             let path=try resolved(link.target,relativeTo:"ppt/presentation.xml")
             guard path.hasPrefix("ppt/slides/"),path.hasSuffix(".xml"),paths.insert(path).inserted else {throw PresentationImportError.malformedPackage}
-            let raw=try archive.xml(path);extractedBytes+=raw.count
+            let raw=try archive.xml(path)
             let page=try XMLTextReader.read(raw)
             let text=page.paragraphs.joined(separator:"\n\n")
             let explicit=page.shapes.first{["title","ctrTitle"].contains($0.placeholder ?? "") && !$0.text.isEmpty}?.text
@@ -162,7 +193,7 @@ enum PPTXReader {
             var notes=""
             let notesRels=relationshipsPart(path)
             if archive.entries[notesRels] != nil {
-                let relData=try archive.xml(notesRels);extractedBytes+=relData.count
+                let relData=try archive.xml(notesRels)
                 let links=try XMLTextReader.read(relData)
                 let noteLinks=links.relationships.values.filter{$0.type.hasSuffix("/notesSlide")}
                 guard noteLinks.count<=1 else {throw PresentationImportError.malformedPackage}
@@ -170,15 +201,14 @@ enum PPTXReader {
                     guard !link.external else {throw PresentationImportError.unsafePart}
                     let notePath=try resolved(link.target,relativeTo:path)
                     guard notePath.hasPrefix("ppt/notesSlides/"),notePath.hasSuffix(".xml") else {throw PresentationImportError.unsafePart}
-                    let noteData=try archive.xml(notePath);extractedBytes+=noteData.count
+                    let noteData=try archive.xml(notePath)
                     let note=try XMLTextReader.read(noteData)
                     notes=note.shapes.filter{!["sldImg","sldNum","dt","hdr","ftr"].contains($0.placeholder ?? "")}
                         .map(\.text).filter{!$0.isEmpty}.joined(separator:"\n\n")
                 }
             }
-            guard extractedBytes<=32*1024*1024 else {throw PresentationImportError.tooLarge}
             if text.isEmpty && notes.isEmpty {empty+=1}
-            slides.append(Slide(page:i+1,title:String(title.replacingOccurrences(of:"\n",with:" ").prefix(300)),text:text,notes:notes,preparedScript:nil,scriptSourcePages:nil))
+            slides.append(Slide(page:i+1,title:title.replacingOccurrences(of:"\n",with:" "),text:text,notes:notes,preparedScript:nil,scriptSourcePages:nil))
         }
         var warnings=["PPTXのスライド順序と文字・発表ノートを抽出しました．図表・画像・数式の意味や配置は再現しません．",
             "番号はファイル内のスライド順序です．非表示スライドも含め，印刷番号は検証しません．"]

@@ -19,6 +19,9 @@ public struct LiveQACard: Identifiable, Sendable {
     fileprivate let draftGate=LiveDisplayGate()
     public fileprivate(set) var status:String
     public fileprivate(set) var cancelled=false
+    public fileprivate(set) var provisionalSpeech=false
+    public fileprivate(set) var stableCompletion=false
+    public var sourceSelectionAmbiguous:Bool {storedReference?.disposition == .ambiguous}
     public var reference:EvidenceSearchResult? {gate.visible ? storedReference:nil}
     public var draft:GuardedLocalDraft? {gate.visible && draftGate.visible ? storedDraft:nil}
     public var allowsDisplay:Bool {gate.visible}
@@ -45,14 +48,34 @@ public enum LocalDraftReviewPolicy:Equatable,Sendable {case requireModelReview,a
     private var active:QuestionLease?
     private var activeOperation:UUID?
     private var generationTask:Task<Void,Never>?
+    private var deadlineTask:Task<Void,Never>?
+    private let generationTimeout:Duration
+    private let generationDebounce:Duration
     private var generationEpoch=UUID()
     private var typedOrder=0
     public private(set) var discardedLateReplies=0
     public private(set) var generationRequests=0
+    public private(set) var generationFailures=0
+    public private(set) var generationTimeouts=0
+    public private(set) var lastGenerationFailure="none"
+    public private(set) var lastInputDisposition="none"
+    /// App-owned state counts only; no recognized text, passages or drafts.
+    public var diagnosticCounts:[String:Int] {
+        ["confirmed":cards.filter{$0.ticket.confirmed}.count,
+         "awaitingContinuation":cards.filter{$0.ticket.isAwaitingContinuation}.count,
+         "unconfirmed":cards.filter{!$0.ticket.confirmed}.count,
+         "insufficientSources":cards.filter{$0.status==LocalDraftFailure.insufficientSources.message}.count,
+         "inputLimit":cards.filter{$0.status==LocalDraftFailure.inputLimit.message}.count,
+         "queued":pending.count,"generating":active == nil ? 0:1,
+         "answers":cards.filter{$0.draft != nil}.count,
+         "generationFailures":generationFailures,"generationTimeouts":generationTimeouts]
+    }
 
     public init(index:EvidenceIndex,generator:any LocalDraftGenerating,reviewPolicy:LocalDraftReviewPolicy = .requireModelReview,
-                generationAllowed:Bool=true) {
+                generationAllowed:Bool=true,generationTimeout:Duration = .seconds(12),
+                generationDebounce:Duration = .milliseconds(400)) {
         self.index=index;self.generator=generator;self.reviewPolicy=reviewPolicy;self.generationAllowed=generationAllowed
+        self.generationTimeout=generationTimeout;self.generationDebounce=generationDebounce
     }
 
     public func beginInput(phase initial:LiveSpeakingPhase) {
@@ -121,13 +144,41 @@ public enum LocalDraftReviewPolicy:Equatable,Sendable {case requireModelReview,a
         guard acceptingInput else {return}
         transcript=update.text
         do {
-            let changes=try pipeline.consume(turnID:update.id,order:update.order,text:update.text,
+            var next=pipeline
+            let changes=try next.consume(turnID:update.id,order:update.order,text:update.text,
                 final:update.final,deck:LiveQuestionDeck(index:index),sourceRevision:update.sourceRevision,
-                sourceEnd:update.sourceRevision == nil ? nil:update.audioEnd)
+                sourceEnd:update.sourceRevision == nil ? nil:update.audioEnd,
+                provisionalFinal:update.provisionalCompletion)
+            pipeline=next
             apply(changes)
+            for offset in cards.indices where cards[offset].ticket.turnID==update.id {
+                let provisional=pipeline.isProvisional(turnID:update.id)
+                cards[offset].provisionalSpeech=provisional
+                cards[offset].stableCompletion=provisional && (update.stableCompletion || cards[offset].stableCompletion)
+            }
+            let hasQuestionChange=changes.contains {change in
+                switch change {case .upsert,.refined,.confirmed:return true;default:return false}
+            }
+            if update.final,LiveQuestionSyntax.isCancellation(update.text),!hasQuestionChange {
+                lastInputDisposition="cancellationDetected"
+                status="質問の取消を受け付けました．次の質問を待っています．"
+            } else if !hasQuestionChange && !pipeline.tickets.contains(where:{$0.turnID==update.id}) {
+                lastInputDisposition=update.final ? "noQuestionDetected":"awaitingQuestionCompletion"
+                status=update.final ? "認識文から質問の完結を確認できませんでした．認識は続け，次の発話を待ちます．":"音声を認識しています．質問の続き又は確定を待っています．"
+            } else {
+                lastInputDisposition=update.final ? "questionDetected":"awaitingFinalRecognition"
+                status="質問を受け付けています．処理状況は各質問に表示します．"
+            }
             launchNext()
         } catch {
-            stop();status="質問の順序または入力上限を確認できないため停止しました．"
+            lastInputDisposition="invalidRecognitionUpdate"
+            // Reject this source update atomically, without shutting down the
+            // owner's continuous session or unrelated confirmed answers.
+            for card in cards where card.ticket.turnID==update.id {
+                suppressed.insert(card.id)
+                retire(card.ticket.lease,reason:"この音声区間の認識を確認できないため，対応する案を取り消しました．")
+            }
+            status="この認識更新を採用できませんでした．認識は継続し，次の質問を待ちます．"
         }
     }
     public func cancel(id:String) {
@@ -174,7 +225,7 @@ public enum LocalDraftReviewPolicy:Equatable,Sendable {case requireModelReview,a
                 enqueue(cards[offset].ticket)
             }
         }
-        cards.sort {($0.ticket.lease.epoch,$0.ticket.turnOrder,$0.ticket.position) < ($1.ticket.lease.epoch,$1.ticket.turnOrder,$1.ticket.position)}
+        cards.sort {($0.ticket.lease.epoch,$0.ticket.turnOrder,$0.ticket.sourceSegment ?? 0,$0.ticket.position) < ($1.ticket.lease.epoch,$1.ticket.turnOrder,$1.ticket.sourceSegment ?? 0,$1.ticket.position)}
         // Keep a bounded recent display while receiving throughout a talk.
         if cards.count>64 {
             let old=Array(cards.prefix(cards.count-64))
@@ -189,43 +240,68 @@ public enum LocalDraftReviewPolicy:Equatable,Sendable {case requireModelReview,a
               !pending.contains(where:{$0.lease == ticket.lease}),
               let offset=cards.firstIndex(where:{$0.ticket.lease == ticket.lease && !$0.cancelled}),
               cards[offset].storedDraft == nil,let reference=cards[offset].storedReference else {return}
-        do {pending.append(try LocalDraftRequest(ticket:ticket,reference:reference));cards[offset].status="端末内モデルの応答を待っています．"}
+        do {pending.append(try LocalDraftRequest(ticket:ticket,reference:reference,
+            allowAmbiguousSources:reviewPolicy == .allowUnverifiedPrototype));cards[offset].status="端末内モデルの応答を待っています．"}
         catch let error as LocalDraftFailure {cards[offset].status=error.message}
         catch {cards[offset].status=LocalDraftFailure.insufficientSources.message}
     }
     private func launchNext() {
         guard active == nil,acceptingInput,generationEnabled,phase == .qna else {return}
         while !pending.isEmpty {
-            let request=pending.removeFirst()
+            let request=pending.removeFirst().startingExecution()
             guard isCurrent(request.lease) else {continue}
             active=request.lease;let epoch=generationEpoch
             let operation=UUID();activeOperation=operation
+            // An SDK response can ignore task cancellation. Retire its display
+            // lease on time without awaiting that response before the next turn.
+            deadlineTask=Task {[weak self] in
+                guard let self else {return}
+                do {try await Task.sleep(for:self.generationTimeout)} catch {return}
+                guard self.activeOperation==operation,self.generationEpoch==epoch else {return}
+                self.generationTimeouts+=1
+                self.generationTask?.cancel()
+                self.finish(request,operation:operation,epoch:epoch,result:.failure(LocalDraftFailure.deadlineExceeded))
+            }
             generationTask=Task { [weak self] in
                 guard let self else {return}
                 do {
-                    try await Task.sleep(for:.milliseconds(400))
+                    try await Task.sleep(for:self.generationDebounce)
                     guard self.generationEpoch == epoch,self.activeOperation == operation,self.isCurrent(request.lease) else {throw CancellationError()}
                     self.update(request.lease){$0.status="端末内モデルで応答案を生成し，原文との対応を検査しています．"}
                     self.generationRequests += 1
                     let draft=try await self.generator.generate(request)
-                    guard !Task.isCancelled,self.generationEpoch == epoch,self.activeOperation == operation,self.isCurrent(request.lease) else {
-                        self.discardedLateReplies += 1;return
-                    }
-                    try LocalDraftDeadline.requireValid(createdAt:request.createdAt)
-                    let unverifiedAllowed=self.reviewPolicy == .allowUnverifiedPrototype && draft.reviewState == .unverifiedAfterModelReview
-                    guard draft.abstained || draft.localModelReviewPassed || unverifiedAllowed || self.reviewPolicy == .mockOnly else {throw LocalDraftFailure.groundingReviewFailed}
-                    self.update(request.lease){card in
-                        card.storedDraft=draft
-                        card.status=draft.abstained ? "根拠不足のため生成を保留しました．":unverifiedAllowed ? "未検証のAI草案です．原文と照合してからお使いください．":draft.composition.label+"．根拠と内容を確認してください．"
-                    }
-                } catch is CancellationError { }
-                catch let error as LocalDraftFailure {if self.generationEpoch == epoch,self.activeOperation == operation {self.update(request.lease){$0.status=error.message}}}
-                catch {if self.generationEpoch == epoch,self.activeOperation == operation {self.update(request.lease){$0.status=LocalDraftFailure.generationFailed.message}}}
-                if self.activeOperation == operation,self.generationEpoch == epoch {
-                    self.active=nil;self.activeOperation=nil;self.generationTask=nil;self.launchNext()
+                    self.finish(request,operation:operation,epoch:epoch,result:.success(draft))
+                } catch {
+                    self.finish(request,operation:operation,epoch:epoch,result:.failure(error))
                 }
             }
             break
+        }
+    }
+    private func finish(_ request:LocalDraftRequest,operation:UUID,epoch:UUID,result:Result<GuardedLocalDraft,Error>) {
+        guard activeOperation==operation,generationEpoch==epoch else {discardedLateReplies+=1;return}
+        defer {
+            deadlineTask?.cancel();deadlineTask=nil
+            active=nil;activeOperation=nil;generationTask=nil
+            launchNext()
+        }
+        guard isCurrent(request.lease) else {discardedLateReplies+=1;return}
+        do {
+            let draft=try result.get()
+            try LocalDraftDeadline.requireValid(createdAt:request.createdAt)
+            let unverifiedAllowed=reviewPolicy == .allowUnverifiedPrototype && draft.reviewState == .unverifiedAfterModelReview
+            guard draft.abstained || draft.localModelReviewPassed || unverifiedAllowed || reviewPolicy == .mockOnly else {throw LocalDraftFailure.groundingReviewFailed}
+            update(request.lease){card in
+                card.storedDraft=draft
+                card.status=draft.abstained ? "根拠不足のため生成を保留しました．":unverifiedAllowed ? "未検証のAI草案です．原文と照合してからお使いください．":draft.composition.label+"．根拠と内容を確認してください．"
+            }
+        } catch {
+            // Owner cancellation already retired the operation above. A
+            // CancellationError from a still-current model call is a failure,
+            // not a reason to leave a permanent "generating" message.
+            let failure=(error as? LocalDraftFailure) ?? .generationFailed
+            generationFailures+=1;lastGenerationFailure=String(describing:failure)
+            update(request.lease){$0.status=failure.message}
         }
     }
     private func isCurrent(_ lease:QuestionLease)->Bool {
@@ -243,9 +319,13 @@ public enum LocalDraftReviewPolicy:Equatable,Sendable {case requireModelReview,a
     }
     private func removeJob(_ lease:QuestionLease) {
         pending.removeAll{$0.lease == lease}
-        if active == lease {generationTask?.cancel();generationTask=nil;active=nil;activeOperation=nil}
+        if active == lease {
+            generationTask?.cancel();generationTask=nil;deadlineTask?.cancel();deadlineTask=nil
+            active=nil;activeOperation=nil
+        }
     }
     private func cancelJobs() {
-        generationEpoch=UUID();generationTask?.cancel();generationTask=nil;active=nil;activeOperation=nil;pending=[]
+        generationEpoch=UUID();generationTask?.cancel();generationTask=nil;deadlineTask?.cancel();deadlineTask=nil
+        active=nil;activeOperation=nil;pending=[]
     }
 }
